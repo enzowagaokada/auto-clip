@@ -1,0 +1,13 @@
+flax
+optax
+numpy
+pandas
+requests
+PyYAML
+python-dotenv
+sentencepiece
+tensorflow
+tf2onnx
+onnx
+onnxruntime
+wandb

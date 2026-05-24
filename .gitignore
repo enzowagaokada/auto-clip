@@ -1,0 +1,23 @@
+# Environments
+.env
+venv/
+.venv/
+env/
+
+# Data
+data/raw/
+data/processed/
+
+# Python Cache
+__pycache__/
+*.pyc
+*.pyo
+
+# IDEs / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Agents (temporary for now as I don't wanna share the agent file)
+AGENTS.md

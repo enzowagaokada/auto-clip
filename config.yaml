@@ -1,0 +1,24 @@
+data:
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+
+twitch:
+  streamers:
+    - name: "stableronaldo"
+      broadcaster_id: "249826019" # You'll need to fetch the real ID if this is incorrect
+      active: true
+    - name: "jasontheween"
+      broadcaster_id: "688268686" # You'll need to fetch the real ID if this is incorrect
+      active: true
+
+model:
+  embed_dim: 64
+  hidden_dim: 128
+  max_seq_len: 512
+
+training:
+  learning_rate: 0.001
+  batch_size: 32
+  epochs: 20
+  pos_weight: 4.0
+  window_seconds: 30
