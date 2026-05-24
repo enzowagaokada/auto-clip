@@ -60,7 +60,7 @@ This means it generalizes to new emotes automatically.
   /raw                    ← raw clip metadata and chat logs from Twitch API
   /processed              ← tokenized, windowed, labeled dataset ready for training
 
-/src
+/training                 ← Python ML environment
   /collect
     fetch_clips.py        ← pull top clips from Twitch API (positive examples)
     fetch_chat.py         ← fetch chat replay logs for each clip timestamp
@@ -81,6 +81,11 @@ This means it generalizes to new emotes automatically.
 
   /inference
     predict.py            ← load model, run inference on a chat window
+
+/cmd
+  /autoclip               ← Go application entrypoint
+
+/models                   ← Exported ONNX and vocab files
 
 config.yaml               ← hyperparameters, streamer list, data paths
 requirements.txt
