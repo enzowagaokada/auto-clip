@@ -97,17 +97,34 @@ requirements.txt
 
 ### Step 1 — Positive Examples (Viral Moments)
 
-Use the Twitch API to pull the most viewed clips for each target streamer:
+Use the Twitch API to pull the most viewed clips for each target streamer within a
+recent time window (older top clips often have expired VODs and cannot be used for
+chat replay):
 
 ```
-GET https://api.twitch.tv/helix/clips?broadcaster_id={id}&first=100
+GET https://api.twitch.tv/helix/clips?broadcaster_id={id}&first=100&started_at={iso}&ended_at={iso}
 ```
+
+`fetch_clips.py` reads `twitch.clips` from `config.yaml`, paginates until
+`max_per_streamer` is reached, and only keeps clips that still have VOD data.
 
 For each clip, record:
 - `clip_id`
 - `vod_offset` — the timestamp in the VOD where the clip starts
 - `vod_id` — which VOD it came from
 - `view_count` — proxy for how viral it was
+
+#### Tuning clip collection (`config.yaml` → `twitch.clips`)
+
+| Parameter | Default | What it does | When to change it |
+|---|---|---|---|
+| `days_back` | `30` | Only fetch clips created in the last N days | **Lower** (e.g. `14`) if many clips are missing VODs — VODs expire on Twitch, so recent clips survive longer. **Raise** (e.g. `60`) if you want more history, but expect more dead VODs. |
+| `max_per_streamer` | `100` | Cap how many clips to fetch per active streamer (paginates automatically) | **Raise** (e.g. `200`) when you need more training positives. **Lower** if you want a quick test run or less chat to download. |
+
+**Symptoms and fixes:**
+- `Found 100 clips, kept 3 with VOD data` → window is too wide or clips are too old; **lower `days_back`**
+- `Found 20 clips, kept 20` → streamer had few clips in that window; **raise `days_back`** or **`max_per_streamer`**
+- Script runs fine but dataset feels small → **raise `max_per_streamer`** across more streamers
 
 Then fetch the chat replay for a window around each clip's `vod_offset`. Because the Helix `/comments` endpoint is deprecated, use the Twitch public GraphQL API (`https://gql.twitch.tv/gql`) with the `VideoCommentsByOffsetOrCursor` query.
 
@@ -340,6 +357,54 @@ Tune the classification threshold (default 0.5) based on your preference:
 - Lower threshold → more clips, more false positives
 - Higher threshold → fewer clips, might miss things
 
+### Streamer-Held-Out Validation
+
+Do not only split windows randomly across the whole dataset. That can make the
+model look better than it really is because clips from the same streamer, VOD, and
+chat culture may appear in both train and validation.
+
+The key generalization test is:
+
+> Can the model work on a streamer it did not see during training?
+
+Evaluate this by holding out one or more entire streamers from training and reporting
+precision, recall, F1, and false-positive rate on those unseen channels. Also track
+metrics per streamer, because a single global F1 can hide that the model works well
+for one community and poorly for another.
+
+---
+
+## Generalization Across Streamers
+
+Streamer chats differ heavily by community, emotes, inside jokes, baseline message
+speed, sarcasm, and what the audience considers clippable. A classifier trained on
+only one or two streamers may overfit to those communities and fail on unseen
+channels.
+
+Use a two-layer strategy:
+
+1. **Global base model** — train on clips and chat windows from many streamers across
+   categories. This model learns universal clippability signals such as chat
+   acceleration, repeated reactions, user participation bursts, and hype decay.
+2. **Per-streamer calibration** — tune lightweight settings per streamer instead of
+   retraining the full model by default. Examples include `clip_threshold`, baseline
+   chat velocity, minimum unique users, cooldown duration, post-detection delay, and
+   streamer-specific emote vocabulary.
+
+For new streamers, start in calibration/suggestion mode:
+
+1. Run the global model for several streams without fully trusting automation.
+2. Save candidate high-score moments.
+3. Compare predictions against actual Twitch clips, manual approvals, and rejected
+   candidates.
+4. Adjust streamer-specific thresholds, cooldowns, and minimum activity requirements.
+5. Feed approved/rejected moments back into future training data.
+
+For high-value customers, offer optional custom fine-tuning on that streamer's
+historical clips and chat logs. This becomes a paid product feature: generic AI
+clippers treat every stream the same, while this system learns the streamer's
+specific chat culture.
+
 ---
 
 ## Hyperparameters to Tune
@@ -428,22 +493,39 @@ Streamers are configured in `config.yaml` — not hardcoded. To add or remove a
 streamer, edit the file and restart the app. No recompile needed.
 
 ```yaml
-streamers:
-  - name: stableronaldo
-    broadcaster_id: "123456789"
-    active: true        # set to false to pause without removing
+twitch:
+  streamers:
+    - name: stableronaldo
+      broadcaster_id: "123456789"
+      active: true        # set to false to pause without removing
+      clip_threshold: 0.82
+      min_unique_users: 30
+      cooldown_seconds: 75
+      post_detection_delay_seconds: 25
 
-  - name: jasontheween
-    broadcaster_id: "987654321"
-    active: true
+    - name: jasontheween
+      broadcaster_id: "987654321"
+      active: true
+      clip_threshold: 0.78
+      min_unique_users: 40
+      cooldown_seconds: 60
+      post_detection_delay_seconds: 25
 
-  - name: someotherstreamer
-    broadcaster_id: "111222333"
-    active: false       # not watching this one right now
+    - name: someotherstreamer
+      broadcaster_id: "111222333"
+      active: false       # not watching this one right now
+      clip_threshold: 0.90
+      min_unique_users: 80
+      cooldown_seconds: 120
+      post_detection_delay_seconds: 30
 ```
 
 Only streamers with `active: true` get a goroutine spawned at startup. This lets you
 control exactly who you are watching without touching any Go code.
+
+Per-streamer settings let the same global model adapt to different chat cultures. A
+chaotic chat may need a higher `clip_threshold` and `min_unique_users`, while a quieter
+chat may need a lower threshold so the model does not miss genuinely important moments.
 
 ### Per-streamer inference loop
 
@@ -451,7 +533,7 @@ Each goroutine runs this loop independently:
 1. Maintains a rolling 30-second buffer of chat messages for its streamer
 2. Every 2–3 seconds, encodes the current buffer into tokens + feature vector
 3. Runs inference via onnxruntime-go
-4. If score > 0.75 → wait 20-30 seconds → fire Twitch Clip API → set 45 second cooldown
+4. If score > the streamer's configured `clip_threshold` → wait `post_detection_delay_seconds` → fire Twitch Clip API → set `cooldown_seconds`
 
 The vocabulary file (token → int mapping) gets shipped alongside the ONNX model so
 Go can tokenize identically to how Python tokenized during training.
@@ -481,6 +563,8 @@ The aftermath is often the funniest part. The delay is worth it.
 - [ ] Weighted BCE loss implemented
 - [ ] Training loop runs without NaN loss
 - [ ] F1 score > 0.75 on held-out validation set
+- [ ] Streamer-held-out validation confirms the model generalizes to unseen channels
+- [ ] Per-streamer calibration settings documented and loaded by the Go clipper
 - [ ] Model exported to ONNX successfully
 - [ ] Inference script confirms ONNX output matches JAX model output
 - [ ] Vocabulary file exported alongside ONNX model for Go tokenization

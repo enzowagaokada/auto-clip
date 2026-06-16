@@ -3,12 +3,15 @@ data:
   processed_dir: "data/processed"
 
 twitch:
+  clips:
+    days_back: 30
+    max_per_streamer: 100
   streamers:
     - name: "stableronaldo"
-      broadcaster_id: "249826019" # You'll need to fetch the real ID if this is incorrect
+      broadcaster_id: "246450563"
       active: true
     - name: "jasontheween"
-      broadcaster_id: "688268686" # You'll need to fetch the real ID if this is incorrect
+      broadcaster_id: "107117952"
       active: true
 
 model:
