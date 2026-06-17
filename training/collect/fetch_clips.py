@@ -127,10 +127,23 @@ def main():
             print(f"  -> Error fetching clips for {name}: {e}")
 
     if all_clips:
-        df = pd.DataFrame(all_clips)
         output_file = os.path.join(raw_dir, "clips.csv")
-        df.to_csv(output_file, index=False)
-        print(f"\nSaved {len(all_clips)} total clips to {output_file}")
+        new_df = pd.DataFrame(all_clips)
+
+        if os.path.exists(output_file):
+            existing_df = pd.read_csv(output_file)
+            existing_count = len(existing_df)
+            combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+            combined_df = combined_df.drop_duplicates(subset=["clip_id"], keep="first")
+            added_count = len(combined_df) - existing_count
+        else:
+            combined_df = new_df
+            added_count = len(combined_df)
+
+        combined_df.to_csv(output_file, index=False)
+
+        print(f"\nSaved {len(combined_df)} total unique clips to {output_file}")
+        print(f"Added {added_count} new clips")
     else:
         print("\nNo clips with VOD data found.")
 

@@ -93,6 +93,111 @@ requirements.txt
 
 ---
 
+## Project Roadmap / Phases
+
+**Current phase:** Phase 1 — Raw Data Collection  
+**Current next step:** Run `python training/collect/fetch_chat.py` from the repository
+root to fetch positive chat windows for the collected clips.
+
+### Phase 1 — Raw Data Collection
+
+Goal: collect positive and negative chat windows from Twitch VODs.
+
+Status: **In progress**
+
+Completed:
+- `fetch_clips.py` fetches recent top clips from Twitch Helix.
+- `fetch_clips.py` appends to `data/raw/clips.csv` and deduplicates by `clip_id`
+  instead of overwriting prior collection runs.
+- `fetch_negatives.py` exists for sampling non-clip moments from the same VODs.
+- The latest observed `fetch_clips.py` run reported 343 unique clips and 153 newly
+  added clips for `stableronaldo` and `jasontheween`.
+
+Next steps:
+- Run `python training/collect/fetch_chat.py` to fetch positive chat windows into
+  `data/raw/chat/`.
+- Run `python training/collect/fetch_negatives.py` to fetch negative chat windows
+  into `data/raw/chat_negatives/`.
+- Inspect the resulting JSON counts before building the processed dataset.
+
+### Phase 2 — Processed Dataset
+
+Goal: turn raw chat JSON into a labeled ML dataset.
+
+Planned:
+- Create `training/collect/build_dataset.py`.
+- Combine `data/raw/chat/` as `label = 1`.
+- Combine `data/raw/chat_negatives/` as `label = 0`.
+- Save processed examples to `data/processed/dataset.jsonl`.
+- Include basic metadata and features such as streamer name, VOD ID, target offset,
+  message count, messages per second, unique users, and label.
+
+### Phase 3 — Tokenization and Encoding
+
+Goal: convert chat text into model-ready tensors.
+
+Planned:
+- Create a tokenizer/vocabulary from the collected chat corpus.
+- Encode messages with `[PAD]`, `[UNK]`, and `[SEP]`.
+- Compute extra features:
+  - messages per second
+  - unique users
+  - normalized stream time
+- Save encoded arrays under `data/processed/`.
+
+### Phase 4 — Baseline Model
+
+Goal: train the first JAX/Flax GRU classifier.
+
+Planned:
+- Implement `training/model/architecture.py`.
+- Implement weighted binary cross entropy.
+- Implement the training loop with Optax.
+- Track precision, recall, F1, confusion matrix, and AUC.
+
+### Phase 5 — Evaluation and Generalization
+
+Goal: prove the model works beyond one streamer.
+
+Planned:
+- Run streamer-held-out validation.
+- Track metrics per streamer.
+- Tune `clip_threshold` per streamer.
+- Add calibration/suggestion mode for new streamers.
+
+### Phase 6 — Export and Inference
+
+Goal: make the model usable outside Python.
+
+Planned:
+- Export the trained model to ONNX.
+- Verify ONNX output matches JAX output.
+- Export the vocabulary file alongside the model.
+- Build `training/inference/predict.py`.
+
+### Phase 7 — Go Live Clipper
+
+Goal: use the trained ONNX model in a real-time Go clipper.
+
+Planned:
+- Connect to live Twitch chat.
+- Maintain a rolling 30-second buffer per streamer.
+- Run ONNX inference every 2-3 seconds.
+- Trigger the Twitch Clip API after the configured delay.
+- Respect cooldown and per-streamer thresholds.
+
+### Phase 8 — Product / Business Layer
+
+Goal: turn the classifier into a commercial clipping product.
+
+Planned:
+- Add per-streamer calibration.
+- Add approval queue or Discord alerts.
+- Add vertical clip formatting and captions.
+- Add managed streamer/agency workflow.
+
+---
+
 ## Data Collection Pipeline
 
 ### Step 1 — Positive Examples (Viral Moments)
