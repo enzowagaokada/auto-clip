@@ -234,12 +234,12 @@ For each clip, record:
 Then fetch the chat replay for a window around each clip's `vod_offset`. Because the Helix `/comments` endpoint is deprecated, use the Twitch public GraphQL API (`https://gql.twitch.tv/gql`) with the `VideoCommentsByOffsetOrCursor` query.
 
 ```graphql
-query VideoCommentsByOffsetOrCursor($videoID: ID!, $contentOffsetSeconds: Float, $cursor: String) {
+query VideoCommentsByOffsetOrCursor($videoID: ID!, $contentOffsetSeconds: Int) {
     video(id: $videoID) {
-        comments(contentOffsetSeconds: $contentOffsetSeconds, after: $cursor, first: 100) {
+        comments(contentOffsetSeconds: $contentOffsetSeconds, first: 100) {
             edges {
-                cursor
                 node {
+                    id
                     createdAt
                     contentOffsetSeconds
                     commenter { displayName }
@@ -256,6 +256,37 @@ Fetch from `offset - 30s` to `offset + 5s` — you want the chat leading up to a
 during the moment, not after.
 
 Label these windows: **y = 1**
+
+#### Gotchas with the GQL chat endpoint (learned the hard way)
+
+This is an **undocumented, unstable** internal API. Two failure modes hit during
+development, both of which `fetch_chat.py` now handles:
+
+1. **Variable types:** the schema expects `contentOffsetSeconds: Int` (not `Float`)
+   and, if you use it, `cursor: Cursor` (not `String`). Wrong types make *every*
+   request fail GraphQL validation, which looks like "no messages" unless you print
+   the `errors` array. `fetch_chat.py` now logs GraphQL errors explicitly.
+2. **Integrity check (`IntegrityCheckFailed`):** **cursor-based** pagination trips
+   Twitch's anti-bot challenge (KPSDK/Kasada), which needs a real browser to solve.
+   **Offset-based** pagination does not. So `fetch_chat.py` paginates by re-querying
+   with the last message's `contentOffsetSeconds` and dedupes overlapping pages by
+   message `id` — never using the cursor.
+
+#### Alternative: `chat-downloader` (pip)
+
+We are **currently using the raw GQL function** above. A maintained alternative worth
+considering if the GQL approach keeps breaking is the `chat-downloader` pip package
+(`pip install chat-downloader`). It is pure Python, importable as a library, supports
+Twitch VOD chat with offset windows, and offloads the maintenance of Twitch's internal
+quirks to its maintainers.
+
+Trade-off: it hits the *same* private Twitch endpoints, so it is not immune to Twitch
+changes — the difference is who owns the fix. If we swap, replace only the internals of
+`fetch_chat_window()` (keep the same inputs/outputs and JSON schema) so the rest of the
+`clips.csv`-driven pipeline and any already-downloaded files stay valid.
+
+`TwitchDownloaderCLI` is also excellent but is an external .NET binary oriented toward
+full-VOD chat dumps, which is a heavier fit for our windowed (35s-per-clip) sampling.
 
 ### Step 2 — Negative Examples (Normal Moments)
 
@@ -277,6 +308,37 @@ Handle this two ways:
 1. **Undersample negatives** at data collection time — don't collect 10,000 negatives
    if you only have 200 positives. Aim for roughly 3:1 or 4:1 negative:positive ratio.
 2. **Weighted loss** at training time — penalize false negatives more (see Loss section).
+
+### Scaling Data Collection (Future Work)
+
+Collection is currently slow because it is fully sequential: one clip at a time, one
+100-message page at a time, each a separate network round trip, with deliberate sleeps
+between requests. For the current dataset size (hundreds of clips) this is fine — it is
+a one-time, resumable, offline batch job. **Do not optimize this yet.** Let it run in
+the background.
+
+The real wall at scale is not code speed but Twitch's **~10,000-messages-per-IP rate
+limit** and bot detection. When much more training data is needed, escalate in this
+order (cheapest/lowest-risk first):
+
+1. **Let it run unattended.** Resumable + skips existing files, so start it and walk
+   away. Gets you to low thousands of clips without any code changes.
+2. **Concurrency + backoff.** Process 3–4 clips in parallel with exponential-backoff
+   retry on `429`/integrity errors. ~3–4× wall-clock improvement, but does not raise the
+   per-IP ceiling — it just reaches it faster.
+3. **Whole-VOD download + local windowing (highest leverage).** Instead of many tiny
+   35s windows (which re-request overlapping regions of the same VOD and waste the
+   rate-limit budget), download each VOD's full chat once and slice many positive and
+   negative windows out of it locally. Far better messages-per-request efficiency.
+4. **Spread across IPs.** Residential/rotating proxies or sharding the clip list across
+   multiple machines/VMs. This is the actual lever for large volume.
+5. **Offload to a paid scraper.** The Apify "Twitch VOD Chat Archive" actor (~$1.05 per
+   1,000 messages) handles TLS fingerprinting, proxy rotation, and the integrity dance.
+   Worth it for a big one-time pull; not for routine top-ups.
+
+Recommended trajectory: **now** → option 1; **low thousands** → options 2 + 3;
+**tens of thousands+** → option 4 or 5. Do not build any of this until the model is
+proven on the current dataset.
 
 ---
 

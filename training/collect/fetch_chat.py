@@ -11,18 +11,23 @@ TWITCH_GQL_URL = "https://gql.twitch.tv/gql"
 def fetch_chat_window(vod_id, start_offset_seconds, end_offset_seconds):
     """
     Fetches chat messages for a specific window in a VOD using Twitch's GraphQL API.
+
+    Pagination is done by content offset, NOT by cursor. Twitch's anti-bot
+    integrity check (IntegrityCheckFailed) fires on cursor-based pagination but
+    not on offset-based pagination, so we always re-query with the offset of the
+    last message seen and dedupe overlapping pages by message id.
     """
     messages = []
-    cursor = None
-    
-    # GraphQL Query for VOD comments
+    seen_ids = set()
+
+    # GraphQL Query for VOD comments. `id` is requested so we can dedupe pages.
     query = """
-    query VideoCommentsByOffsetOrCursor($videoID: ID!, $contentOffsetSeconds: Float, $cursor: String) {
+    query VideoCommentsByOffsetOrCursor($videoID: ID!, $contentOffsetSeconds: Int) {
         video(id: $videoID) {
-            comments(contentOffsetSeconds: $contentOffsetSeconds, after: $cursor, first: 100) {
+            comments(contentOffsetSeconds: $contentOffsetSeconds, first: 100) {
                 edges {
-                    cursor
                     node {
+                        id
                         createdAt
                         contentOffsetSeconds
                         commenter {
@@ -48,70 +53,85 @@ def fetch_chat_window(vod_id, start_offset_seconds, end_offset_seconds):
         "Content-Type": "application/json"
     }
 
-    variables = {
-        "videoID": str(vod_id),
-        "contentOffsetSeconds": max(0, start_offset_seconds)
-    }
+    next_offset = max(0, start_offset_seconds)
 
     while True:
-        if cursor:
-            variables["cursor"] = cursor
-            # When using cursor, we drop contentOffsetSeconds
-            variables.pop("contentOffsetSeconds", None)
-
         payload = {
             "query": query,
-            "variables": variables
+            "variables": {
+                "videoID": str(vod_id),
+                "contentOffsetSeconds": int(next_offset),
+            },
         }
 
         try:
             response = requests.post(TWITCH_GQL_URL, json=payload, headers=headers)
             response.raise_for_status()
             data = response.json()
-            
-            # Handle potential GraphQL errors or missing data
+
+            # Surface GraphQL errors instead of silently treating them as empty
+            if data.get("errors"):
+                print(f"    GraphQL error: {data['errors']}")
+                break
+
+            # Handle missing data (e.g. deleted/unavailable VOD)
             if not data.get("data") or not data["data"].get("video") or not data["data"]["video"].get("comments"):
                 break
-                
+
             comments_data = data["data"]["video"]["comments"]
             edges = comments_data.get("edges", [])
-            
+
             if not edges:
                 break
-                
+
+            page_max_offset = next_offset
+            new_in_page = 0
+
             for edge in edges:
                 node = edge["node"]
                 offset = node["contentOffsetSeconds"]
-                
+                page_max_offset = max(page_max_offset, offset)
+
                 # If we've passed our window, stop fetching entirely
                 if offset > end_offset_seconds:
                     return messages
-                    
+
+                msg_id = node.get("id")
+                if msg_id in seen_ids:
+                    continue
+                seen_ids.add(msg_id)
+                new_in_page += 1
+
                 # Assemble the message text from fragments
                 msg_fragments = node.get("message", {}).get("fragments", [])
                 full_text = "".join([frag.get("text", "") for frag in msg_fragments]).strip()
-                
+
                 commenter = node.get("commenter")
                 display_name = commenter.get("displayName") if commenter else "Unknown"
-                
+
                 messages.append({
                     "offset_seconds": offset,
                     "created_at": node["createdAt"],
                     "user": display_name,
                     "message": full_text
                 })
-                
-                # Keep track of the last cursor in case we need to paginate
-                cursor = edge["cursor"]
-                
-            # Check pagination
+
+            # Stop if Twitch says there are no more pages
             page_info = comments_data.get("pageInfo", {})
             if not page_info.get("hasNextPage"):
                 break
-                
+
+            # Advance by offset. Move to the latest offset seen; if the page did
+            # not advance the offset (a single second with >100 messages), force
+            # progress by +1 to avoid an infinite loop.
+            if page_max_offset > next_offset:
+                next_offset = page_max_offset
+            else:
+                next_offset = next_offset + 1
+
             # Be polite to the undocumented API
             time.sleep(0.1)
-            
+
         except Exception as e:
             print(f"    Error fetching chunk: {e}")
             break
