@@ -16,6 +16,7 @@ When the score crosses a threshold, the Go clipper fires the Twitch Clip API.
 ## The Core Problem
 
 Given a 30-second window of Twitch chat messages, predict:
+
 - **1** = this is a viral/clippable moment
 - **0** = this is a normal/boring moment
 
@@ -27,6 +28,7 @@ This is **binary classification** on **sequential text data**.
 
 A simple feature vector (emote counts, message rate) misses the temporal structure of
 hype. Real viral moments have a shape:
+
 - Slow baseline chat
 - Sudden acceleration
 - Burst of repeated reactions
@@ -40,16 +42,18 @@ This means it generalizes to new emotes automatically.
 
 ## Tech Stack
 
-| Layer | Tool |
-|---|---|
-| Language | Python 3.11+ |
-| ML Framework | JAX |
+
+| Layer                  | Tool                                           |
+| ---------------------- | ---------------------------------------------- |
+| Language               | Python 3.11+                                   |
+| ML Framework           | JAX                                            |
 | Neural Network Library | Flax (JAX-native, explicit parameter handling) |
-| Optimizer Library | Optax |
-| Data processing | Pandas, NumPy |
-| Tokenization | Simple custom vocab or SentencePiece |
-| Experiment tracking | Weights & Biases (wandb) — optional |
-| Model export | ONNX (via jax2tf → tf2onnx) for Go integration |
+| Optimizer Library      | Optax                                          |
+| Data processing        | Pandas, NumPy                                  |
+| Tokenization           | Simple custom vocab or SentencePiece           |
+| Experiment tracking    | Weights & Biases (wandb) — optional            |
+| Model export           | ONNX (via jax2tf → tf2onnx) for Go integration |
+
 
 ---
 
@@ -106,18 +110,20 @@ Goal: collect positive and negative chat windows from Twitch VODs.
 Status: **In progress**
 
 Completed:
+
 - `fetch_clips.py` fetches recent top clips from Twitch Helix.
 - `fetch_clips.py` appends to `data/raw/clips.csv` and deduplicates by `clip_id`
-  instead of overwriting prior collection runs.
+instead of overwriting prior collection runs.
 - `fetch_negatives.py` exists for sampling non-clip moments from the same VODs.
 - The latest observed `fetch_clips.py` run reported 343 unique clips and 153 newly
-  added clips for `stableronaldo` and `jasontheween`.
+added clips for `stableronaldo` and `jasontheween`.
 
 Next steps:
+
 - Run `python training/collect/fetch_chat.py` to fetch positive chat windows into
-  `data/raw/chat/`.
+`data/raw/chat/`.
 - Run `python training/collect/fetch_negatives.py` to fetch negative chat windows
-  into `data/raw/chat_negatives/`.
+into `data/raw/chat_negatives/`.
 - Inspect the resulting JSON counts before building the processed dataset.
 
 ### Phase 2 — Processed Dataset
@@ -125,18 +131,20 @@ Next steps:
 Goal: turn raw chat JSON into a labeled ML dataset.
 
 Planned:
+
 - Create `training/collect/build_dataset.py`.
 - Combine `data/raw/chat/` as `label = 1`.
 - Combine `data/raw/chat_negatives/` as `label = 0`.
 - Save processed examples to `data/processed/dataset.jsonl`.
 - Include basic metadata and features such as streamer name, VOD ID, target offset,
-  message count, messages per second, unique users, and label.
+message count, messages per second, unique users, and label.
 
 ### Phase 3 — Tokenization and Encoding
 
 Goal: convert chat text into model-ready tensors.
 
 Planned:
+
 - Create a tokenizer/vocabulary from the collected chat corpus.
 - Encode messages with `[PAD]`, `[UNK]`, and `[SEP]`.
 - Compute extra features:
@@ -150,6 +158,7 @@ Planned:
 Goal: train the first JAX/Flax GRU classifier.
 
 Planned:
+
 - Implement `training/model/architecture.py`.
 - Implement weighted binary cross entropy.
 - Implement the training loop with Optax.
@@ -160,6 +169,7 @@ Planned:
 Goal: prove the model works beyond one streamer.
 
 Planned:
+
 - Run streamer-held-out validation.
 - Track metrics per streamer.
 - Tune `clip_threshold` per streamer.
@@ -170,6 +180,7 @@ Planned:
 Goal: make the model usable outside Python.
 
 Planned:
+
 - Export the trained model to ONNX.
 - Verify ONNX output matches JAX output.
 - Export the vocabulary file alongside the model.
@@ -180,6 +191,7 @@ Planned:
 Goal: use the trained ONNX model in a real-time Go clipper.
 
 Planned:
+
 - Connect to live Twitch chat.
 - Maintain a rolling 30-second buffer per streamer.
 - Run ONNX inference every 2-3 seconds.
@@ -191,6 +203,7 @@ Planned:
 Goal: turn the classifier into a commercial clipping product.
 
 Planned:
+
 - Add per-streamer calibration.
 - Add approval queue or Discord alerts.
 - Add vertical clip formatting and captions.
@@ -214,6 +227,7 @@ GET https://api.twitch.tv/helix/clips?broadcaster_id={id}&first=100&started_at={
 `max_per_streamer` is reached, and only keeps clips that still have VOD data.
 
 For each clip, record:
+
 - `clip_id`
 - `vod_offset` — the timestamp in the VOD where the clip starts
 - `vod_id` — which VOD it came from
@@ -221,14 +235,17 @@ For each clip, record:
 
 #### Tuning clip collection (`config.yaml` → `twitch.clips`)
 
-| Parameter | Default | What it does | When to change it |
-|---|---|---|---|
-| `days_back` | `30` | Only fetch clips created in the last N days | **Lower** (e.g. `14`) if many clips are missing VODs — VODs expire on Twitch, so recent clips survive longer. **Raise** (e.g. `60`) if you want more history, but expect more dead VODs. |
-| `max_per_streamer` | `100` | Cap how many clips to fetch per active streamer (paginates automatically) | **Raise** (e.g. `200`) when you need more training positives. **Lower** if you want a quick test run or less chat to download. |
+
+| Parameter          | Default | What it does                                                              | When to change it                                                                                                                                                                        |
+| ------------------ | ------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `days_back`        | `30`    | Only fetch clips created in the last N days                               | **Lower** (e.g. `14`) if many clips are missing VODs — VODs expire on Twitch, so recent clips survive longer. **Raise** (e.g. `60`) if you want more history, but expect more dead VODs. |
+| `max_per_streamer` | `100`   | Cap how many clips to fetch per active streamer (paginates automatically) | **Raise** (e.g. `200`) when you need more training positives. **Lower** if you want a quick test run or less chat to download.                                                           |
+
 
 **Symptoms and fixes:**
+
 - `Found 100 clips, kept 3 with VOD data` → window is too wide or clips are too old; **lower `days_back`**
-- `Found 20 clips, kept 20` → streamer had few clips in that window; **raise `days_back`** or **`max_per_streamer`**
+- `Found 20 clips, kept 20` → streamer had few clips in that window; **raise `days_back`** or `**max_per_streamer**`
 - Script runs fine but dataset feels small → **raise `max_per_streamer`** across more streamers
 
 Then fetch the chat replay for a window around each clip's `vod_offset`. Because the Helix `/comments` endpoint is deprecated, use the Twitch public GraphQL API (`https://gql.twitch.tv/gql`) with the `VideoCommentsByOffsetOrCursor` query.
@@ -263,11 +280,11 @@ This is an **undocumented, unstable** internal API. Two failure modes hit during
 development, both of which `fetch_chat.py` now handles:
 
 1. **Variable types:** the schema expects `contentOffsetSeconds: Int` (not `Float`)
-   and, if you use it, `cursor: Cursor` (not `String`). Wrong types make *every*
+  and, if you use it, `cursor: Cursor` (not `String`). Wrong types make *every*
    request fail GraphQL validation, which looks like "no messages" unless you print
    the `errors` array. `fetch_chat.py` now logs GraphQL errors explicitly.
 2. **Integrity check (`IntegrityCheckFailed`):** **cursor-based** pagination trips
-   Twitch's anti-bot challenge (KPSDK/Kasada), which needs a real browser to solve.
+  Twitch's anti-bot challenge (KPSDK/Kasada), which needs a real browser to solve.
    **Offset-based** pagination does not. So `fetch_chat.py` paginates by re-querying
    with the last message's `contentOffsetSeconds` and dedupes overlapping pages by
    message `id` — never using the cursor.
@@ -291,8 +308,9 @@ full-VOD chat dumps, which is a heavier fit for our windowed (35s-per-clip) samp
 ### Step 2 — Negative Examples (Normal Moments)
 
 For each VOD that had clips, sample random timestamps that are:
+
 - Not within 60 seconds of any clip timestamp (add buffer so you don't accidentally
-  label a viral moment as negative)
+label a viral moment as negative)
 - From parts of the stream with roughly average chat activity
 
 Fetch the same 35-second chat window for each negative timestamp.
@@ -305,8 +323,9 @@ You will have far more negatives than positives. A streamer might clip 20 moment
 in an 8-hour stream — that's maybe 1% of all possible windows being positive.
 
 Handle this two ways:
+
 1. **Undersample negatives** at data collection time — don't collect 10,000 negatives
-   if you only have 200 positives. Aim for roughly 3:1 or 4:1 negative:positive ratio.
+  if you only have 200 positives. Aim for roughly 3:1 or 4:1 negative:positive ratio.
 2. **Weighted loss** at training time — penalize false negatives more (see Loss section).
 
 ### Scaling Data Collection (Future Work)
@@ -322,18 +341,18 @@ limit** and bot detection. When much more training data is needed, escalate in t
 order (cheapest/lowest-risk first):
 
 1. **Let it run unattended.** Resumable + skips existing files, so start it and walk
-   away. Gets you to low thousands of clips without any code changes.
+  away. Gets you to low thousands of clips without any code changes.
 2. **Concurrency + backoff.** Process 3–4 clips in parallel with exponential-backoff
-   retry on `429`/integrity errors. ~3–4× wall-clock improvement, but does not raise the
+  retry on `429`/integrity errors. ~3–4× wall-clock improvement, but does not raise the
    per-IP ceiling — it just reaches it faster.
 3. **Whole-VOD download + local windowing (highest leverage).** Instead of many tiny
-   35s windows (which re-request overlapping regions of the same VOD and waste the
+  35s windows (which re-request overlapping regions of the same VOD and waste the
    rate-limit budget), download each VOD's full chat once and slice many positive and
    negative windows out of it locally. Far better messages-per-request efficiency.
 4. **Spread across IPs.** Residential/rotating proxies or sharding the clip list across
-   multiple machines/VMs. This is the actual lever for large volume.
+  multiple machines/VMs. This is the actual lever for large volume.
 5. **Offload to a paid scraper.** The Apify "Twitch VOD Chat Archive" actor (~$1.05 per
-   1,000 messages) handles TLS fingerprinting, proxy rotation, and the integrity dance.
+  1,000 messages) handles TLS fingerprinting, proxy rotation, and the integrity dance.
    Worth it for a big one-time pull; not for routine top-ups.
 
 Recommended trajectory: **now** → option 1; **low thousands** → options 2 + 3;
@@ -349,6 +368,7 @@ Each training sample is a **sequence of chat messages** in a 30-second window.
 ### Tokenization
 
 Build a vocabulary from the collected chat corpus. Include:
+
 - Common words and slang
 - Emote names (they appear as plain text in IRC — `MINIONLAUGH`, `KEKW`, etc.)
 - Special tokens: `[PAD]`, `[UNK]`, `[SEP]` (separator between messages)
@@ -360,6 +380,29 @@ Each message in the window gets tokenized and concatenated with `[SEP]` between 
 ```
 
 Cap the total sequence length (e.g. 512 tokens). Pad shorter windows.
+
+#### `[UNK]`, new emotes, and future-proofing
+
+Any token not in the vocabulary (rare words, typos, or emotes too new/infrequent to
+clear `min_freq`) maps to `[UNK]`. This is not just error handling — it has real
+implications for how the model handles emotes that go viral *after* training:
+
+- **The structural signal survives even when an emote is `[UNK]`.** This is precisely
+why a sequence model "generalizes to emotes we are not aware of." When a brand-new
+emote trends and hundreds of users spam it, the model sees `[UNK] [SEP] [UNK] [SEP] [UNK] ...` — but the *shape* (rapid repetition, high message velocity, many unique
+users) is the exact hype pattern the GRU learns. So a new viral emote can still fire
+the classifier immediately, as `[UNK]`, because the model keys off the burst pattern,
+not the specific token identity.
+- **The specific identity is lost until we rebuild.** `[UNK]` cannot learn that one
+particular new emote is individually high-signal. To "promote" a new emote from
+`[UNK]` into its own learned token, periodically re-run the pipeline
+(`build_dataset.py` -> `encode.py` rebuilds the vocab from fresh data) and retrain.
+This is a normal maintenance loop, not a redesign — the data pipeline already
+supports it.
+
+Takeaway: today's `[UNK]` may be tomorrow's high-signal emote. The structural features
+keep us covered in the short term; a periodic vocab-rebuild + retrain captures new
+emotes' specific identities over time.
 
 ### Additional Features (concatenated after sequence encoding)
 
@@ -423,10 +466,11 @@ output = model.apply(params, dummy_tokens, dummy_features)
 ```
 
 ### Why These Activation Functions
+
 - **ReLU** in hidden layers — introduces non-linearity, lets the model learn complex
-  patterns, kills negative values (prevents vanishing gradients better than tanh)
+patterns, kills negative values (prevents vanishing gradients better than tanh)
 - **Sigmoid** on the output layer — squashes output to [0, 1] so it's a valid
-  probability score
+probability score
 
 ---
 
@@ -514,6 +558,7 @@ for epoch in range(EPOCHS):
 Do NOT use accuracy — it's meaningless with class imbalance.
 
 Use:
+
 - **Precision** — of moments the model called viral, how many actually were?
 - **Recall** — of actual viral moments, how many did the model catch?
 - **F1 Score** — harmonic mean of precision and recall, the primary metric
@@ -521,6 +566,7 @@ Use:
 - **AUC-ROC** — threshold-independent measure of classifier quality
 
 Tune the classification threshold (default 0.5) based on your preference:
+
 - Lower threshold → more clips, more false positives
 - Higher threshold → fewer clips, might miss things
 
@@ -551,10 +597,10 @@ channels.
 Use a two-layer strategy:
 
 1. **Global base model** — train on clips and chat windows from many streamers across
-   categories. This model learns universal clippability signals such as chat
+  categories. This model learns universal clippability signals such as chat
    acceleration, repeated reactions, user participation bursts, and hype decay.
 2. **Per-streamer calibration** — tune lightweight settings per streamer instead of
-   retraining the full model by default. Examples include `clip_threshold`, baseline
+  retraining the full model by default. Examples include `clip_threshold`, baseline
    chat velocity, minimum unique users, cooldown duration, post-detection delay, and
    streamer-specific emote vocabulary.
 
@@ -563,7 +609,7 @@ For new streamers, start in calibration/suggestion mode:
 1. Run the global model for several streams without fully trusting automation.
 2. Save candidate high-score moments.
 3. Compare predictions against actual Twitch clips, manual approvals, and rejected
-   candidates.
+  candidates.
 4. Adjust streamer-specific thresholds, cooldowns, and minimum activity requirements.
 5. Feed approved/rejected moments back into future training data.
 
@@ -576,17 +622,19 @@ specific chat culture.
 
 ## Hyperparameters to Tune
 
-| Parameter | Starting Value | Notes |
-|---|---|---|
-| `embed_dim` | 64 | Embedding size per token |
-| `hidden_dim` | 128 | GRU hidden state size |
-| `learning_rate` | 1e-3 | Adam default, reduce if unstable |
-| `dropout` | 0.3 | Regularization, increase if overfitting |
-| `pos_weight` | 4.0 | Match your negative:positive ratio |
-| `batch_size` | 32 | Increase if training is slow |
-| `window_seconds` | 30 | Chat window size |
-| `max_seq_len` | 512 | Token sequence cap |
-| `clip_threshold` | 0.75 | Inference threshold for triggering clip |
+
+| Parameter        | Starting Value | Notes                                   |
+| ---------------- | -------------- | --------------------------------------- |
+| `embed_dim`      | 64             | Embedding size per token                |
+| `hidden_dim`     | 128            | GRU hidden state size                   |
+| `learning_rate`  | 1e-3           | Adam default, reduce if unstable        |
+| `dropout`        | 0.3            | Regularization, increase if overfitting |
+| `pos_weight`     | 4.0            | Match your negative:positive ratio      |
+| `batch_size`     | 32             | Increase if training is slow            |
+| `window_seconds` | 30             | Chat window size                        |
+| `max_seq_len`    | 512            | Token sequence cap                      |
+| `clip_threshold` | 0.75           | Inference threshold for triggering clip |
+
 
 ---
 
@@ -697,6 +745,7 @@ chat may need a lower threshold so the model does not miss genuinely important m
 ### Per-streamer inference loop
 
 Each goroutine runs this loop independently:
+
 1. Maintains a rolling 30-second buffer of chat messages for its streamer
 2. Every 2–3 seconds, encodes the current buffer into tokens + feature vector
 3. Runs inference via onnxruntime-go
@@ -712,6 +761,7 @@ If you clip immediately when the model fires, you capture the buildup but miss t
 aftermath — the streamer's delayed reaction, chat spam peaking, the follow-up moment.
 
 By waiting 20-30 seconds after detection before firing the clip API, you capture:
+
 - ~90 seconds of buildup leading into the moment
 - The moment itself
 - 20-30 seconds of streamer and chat reaction afterward
@@ -722,8 +772,8 @@ The aftermath is often the funniest part. The delay is worth it.
 
 ## Definition of Done
 
-- [ ] Data collection scripts pull top clips and chat replays for stableronaldo and jasontheween
-- [ ] Negative examples collected and dataset balanced
+- [x] Data collection scripts pull top clips and chat replays for stableronaldo and jasontheween
+- [x] Negative examples collected and dataset balanced
 - [ ] Tokenizer built from collected chat corpus
 - [ ] Chat windows encoded into sequence tensors
 - [ ] GRU classifier implemented in Flax
@@ -745,3 +795,4 @@ The aftermath is often the funniest part. The delay is worth it.
 - No dashboard or UI
 - Do not use PyTorch — use JAX + Flax throughout
 - Do not use Equinox
+

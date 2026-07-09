@@ -1,0 +1,26 @@
+{
+  "vocab_size": 17580,
+  "embed_dim": 64,
+  "hidden_dim": 128,
+  "max_seq_len": 512,
+  "num_features": 3,
+  "feature_names": [
+    "messages_per_second",
+    "unique_users",
+    "normalized_stream_time"
+  ],
+  "feature_mean": [
+    6.2756829261779785,
+    150.0987091064453,
+    0.0
+  ],
+  "feature_std": [
+    3.2018325328826904,
+    76.5377426147461,
+    1.0
+  ],
+  "max_offset": 165583,
+  "threshold": 0.5,
+  "best_val_f1": 0.5625,
+  "split": "random 80/20 split"
+}
