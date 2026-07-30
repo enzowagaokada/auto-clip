@@ -1,7 +1,7 @@
 """Flax GRU classifier for Twitch chat windows.
 
 embed tokens -> GRU over the sequence -> take final hidden state ->
-concatenate the numeric features -> dense head -> sigmoid probability.
+concatenate the numeric features -> dense head -> output logit.
 
 Sequences are left-padded (see training/features/tokenizer.py), so the final
 timestep is always a real token, which is what we read for classification.
@@ -16,12 +16,18 @@ class ChatClassifier(nn.Module):
     embed_dim: int = 64
     hidden_dim: int = 128
     num_features: int = 3
-    dropout_rate: float = 0.3
+    embedding_dropout_rate: float = 0.15
+    head_dropout_rate: float = 0.4
 
     @nn.compact
     def __call__(self, tokens, features, training: bool = False):
         # tokens: (batch, seq_len) int32 ; features: (batch, num_features) float32
         x = nn.Embed(self.vocab_size, self.embed_dim, name="embed")(tokens)
+        x = nn.Dropout(
+            rate=self.embedding_dropout_rate,
+            deterministic=not training,
+            name="embedding_dropout",
+        )(x)
 
         # GRU over the sequence; nn.RNN returns all hidden states.
         gru = nn.RNN(nn.GRUCell(features=self.hidden_dim), name="gru")
@@ -32,7 +38,10 @@ class ChatClassifier(nn.Module):
 
         out = nn.Dense(64, name="dense_1")(combined)
         out = nn.relu(out)
-        out = nn.Dropout(rate=self.dropout_rate, deterministic=not training)(out)
+        out = nn.Dropout(
+            rate=self.head_dropout_rate,
+            deterministic=not training,
+            name="head_dropout",
+        )(out)
         out = nn.Dense(1, name="dense_out")(out)
-        out = nn.sigmoid(out)
-        return out.squeeze(-1)              # (batch,)
+        return out.squeeze(-1)              # logits, shape (batch,)

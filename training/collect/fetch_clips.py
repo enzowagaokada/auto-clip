@@ -26,6 +26,26 @@ def get_app_access_token():
     return response.json()["access_token"]
 
 
+def build_date_windows(now, days_back, window_days):
+    """Split the last `days_back` days into consecutive windows of `window_days`.
+
+    Fetching top clips per small window yields far more unique clips than one big
+    range (Twitch returns top-by-views per range, and deep pagination is unreliable).
+    Returns a list of (start, end) datetime tuples, most recent last.
+    """
+    if window_days <= 0:
+        window_days = days_back
+
+    windows = []
+    span_start = now - timedelta(days=days_back)
+    cursor = span_start
+    while cursor < now:
+        win_end = min(cursor + timedelta(days=window_days), now)
+        windows.append((cursor, win_end))
+        cursor = win_end
+    return windows
+
+
 def fetch_clips_in_range(broadcaster_id, headers, started_at, ended_at, max_clips=100):
     """Fetches top clips for a broadcaster within a date range."""
     url = "https://api.twitch.tv/helix/clips"
@@ -71,11 +91,10 @@ def main():
     clips_config = config["twitch"].get("clips", {})
     days_back = clips_config.get("days_back", 30)
     max_per_streamer = clips_config.get("max_per_streamer", 100)
+    window_days = clips_config.get("window_days", days_back)
 
-    ended_at = datetime.now(timezone.utc)
-    started_at = ended_at - timedelta(days=days_back)
-    started_at_str = started_at.strftime("%Y-%m-%dT%H:%M:%SZ")
-    ended_at_str = ended_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(timezone.utc)
+    windows = build_date_windows(now, days_back, window_days)
 
     print("Authenticating with Twitch...")
     token = get_app_access_token()
@@ -85,8 +104,8 @@ def main():
     }
 
     print(
-        f"Fetching up to {max_per_streamer} clips per streamer "
-        f"from the last {days_back} days ({started_at_str} to {ended_at_str})..."
+        f"Fetching up to {max_per_streamer} clips per {window_days}-day window "
+        f"across the last {days_back} days ({len(windows)} windows per streamer)..."
     )
 
     all_clips = []
@@ -97,18 +116,30 @@ def main():
 
         name = streamer["name"]
         broadcaster_id = streamer["broadcaster_id"]
-
         print(f"Fetching clips for {name} ({broadcaster_id})...")
-        try:
-            clips = fetch_clips_in_range(
-                broadcaster_id,
-                headers,
-                started_at_str,
-                ended_at_str,
-                max_clips=max_per_streamer,
-            )
-            kept_before = len(all_clips)
+
+        kept_before = len(all_clips)
+        seen_ids = set()
+
+        for win_start, win_end in windows:
+            started_at_str = win_start.strftime("%Y-%m-%dT%H:%M:%SZ")
+            ended_at_str = win_end.strftime("%Y-%m-%dT%H:%M:%SZ")
+            try:
+                clips = fetch_clips_in_range(
+                    broadcaster_id,
+                    headers,
+                    started_at_str,
+                    ended_at_str,
+                    max_clips=max_per_streamer,
+                )
+            except requests.exceptions.RequestException as e:
+                print(f"  -> Error for window {started_at_str[:10]}..{ended_at_str[:10]}: {e}")
+                continue
+
             for clip in clips:
+                if clip["id"] in seen_ids:
+                    continue
+                seen_ids.add(clip["id"])
                 if clip.get("video_id") and clip.get("vod_offset") is not None:
                     all_clips.append(
                         {
@@ -121,10 +152,9 @@ def main():
                             "duration": clip["duration"],
                         }
                     )
-            kept = len(all_clips) - kept_before
-            print(f"  -> Found {len(clips)} clips, kept {kept} with VOD data.")
-        except requests.exceptions.RequestException as e:
-            print(f"  -> Error fetching clips for {name}: {e}")
+
+        kept = len(all_clips) - kept_before
+        print(f"  -> Kept {kept} clips with VOD data across {len(windows)} windows.")
 
     if all_clips:
         output_file = os.path.join(raw_dir, "clips.csv")

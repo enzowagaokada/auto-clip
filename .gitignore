@@ -24,3 +24,16 @@ AGENTS.md
 
 # Personal study notes (not for sharing)
 NOTES.md
+
+# Experiment dumps (large)
+models/runs/
+
+# Export / tracking artifacts
+*.onnx
+wandb/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/

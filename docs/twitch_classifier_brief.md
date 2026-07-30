@@ -3,13 +3,25 @@
 ## What I Am Building
 
 A binary classifier that watches a rolling window of Twitch chat messages and outputs
-a probability score (0–1) representing how likely the current moment is clippable/viral.
+a ranking score (0–1) representing how strongly the chat resembles reactions around
+historically clippable moments. The raw score is not assumed to be a calibrated
+probability.
 
 The classifier replaces hardcoded emote detection entirely. It learns what hype chat
 *feels like* from historical data — so it generalizes to emotes, slang, and reaction
 patterns I am not even aware of.
 
-When the score crosses a threshold, the Go clipper fires the Twitch Clip API.
+The product exposes the threshold as **clipping sensitivity**. A strict sensitivity
+produces fewer, higher-confidence candidates; balanced and discovery sensitivities
+produce progressively more candidates for the user to review. When a candidate crosses
+the configured sensitivity threshold, the Go clipper can create a clip or send it to an
+approval queue.
+
+This is intentionally a candidate-ranking system rather than a guarantee that every
+detection is worth clipping. Chat alone cannot always distinguish a meaningful
+on-stream event from routine spam, raids, repeated jokes, or community memes that cause
+the same reaction pattern. User approvals and rejections are therefore part of the
+product and future training loop.
 
 ---
 
@@ -99,15 +111,16 @@ requirements.txt
 
 ## Project Roadmap / Phases
 
-**Current phase:** Phase 1 — Raw Data Collection  
-**Current next step:** Run `python training/collect/fetch_chat.py` from the repository
-root to fetch positive chat windows for the collected clips.
+**Current phase:** Phase 4/5 — Baseline Model and Generalization  
+**Current next step:** Rebuild the processed dataset, train with whole-VOD
+validation, then run streamer-held-out evaluations. See
+`docs/training_playbook.md`.
 
 ### Phase 1 — Raw Data Collection
 
 Goal: collect positive and negative chat windows from Twitch VODs.
 
-Status: **In progress**
+Status: **Implemented; collection remains an ongoing data-growth task**
 
 Completed:
 
@@ -130,7 +143,7 @@ into `data/raw/chat_negatives/`.
 
 Goal: turn raw chat JSON into a labeled ML dataset.
 
-Planned:
+Implemented:
 
 - Create `training/collect/build_dataset.py`.
 - Combine `data/raw/chat/` as `label = 1`.
@@ -143,7 +156,7 @@ message count, messages per second, unique users, and label.
 
 Goal: convert chat text into model-ready tensors.
 
-Planned:
+Implemented:
 
 - Create a tokenizer/vocabulary from the collected chat corpus.
 - Encode messages with `[PAD]`, `[UNK]`, and `[SEP]`.
@@ -157,7 +170,7 @@ Planned:
 
 Goal: train the first JAX/Flax GRU classifier.
 
-Planned:
+Implemented:
 
 - Implement `training/model/architecture.py`.
 - Implement weighted binary cross entropy.
@@ -204,8 +217,14 @@ Goal: turn the classifier into a commercial clipping product.
 
 Planned:
 
-- Add per-streamer calibration.
-- Add approval queue or Discord alerts.
+- Add per-streamer clipping-sensitivity calibration.
+- Offer user-facing presets such as **Strict**, **Balanced**, and **Discovery** rather
+  than presenting the raw model score as a probability.
+- Add an approval queue or Discord alerts so users can review candidate clips.
+- Track expected candidates per stream-hour and accepted-candidate rate for each
+  sensitivity preset.
+- Feed approvals, rejections, and ambiguous candidates into persistent review data for
+  retraining and optional streamer-specific personalization.
 - Add vertical clip formatting and captions.
 - Add managed streamer/agency workflow.
 
@@ -363,7 +382,9 @@ proven on the current dataset.
 
 ## Input Representation
 
-Each training sample is a **sequence of chat messages** in a 30-second window.
+Each training sample is a **sequence of chat messages** plus numeric temporal
+features from a 35-second window (30 seconds before through 5 seconds after the
+target).
 
 ### Tokenization
 
@@ -408,9 +429,15 @@ emotes' specific identities over time.
 
 - Messages per second (velocity)
 - Unique users in window
-- Time since stream started (normalized)
+- Time since stream started (divided by a fixed 12-hour scale and clipped)
+- Seven 5-second message-rate buckets
+- Late-window versus early-window rate change
+- Peak 5-second rate
+- Repeated-message ratio
 
 These get concatenated onto the final hidden state before the classification head.
+The bucket features are required for learning acceleration and decay: token order
+alone contains no message timestamps.
 
 ---
 
@@ -450,8 +477,7 @@ class ChatClassifier(nn.Module):
         out = nn.relu(out)
         out = nn.Dropout(rate=0.3)(out, deterministic=not training)
         out = nn.Dense(1)(out)
-        out = nn.sigmoid(out)         # output: probability 0-1
-        return out.squeeze(-1)
+        return out.squeeze(-1)        # logits; apply sigmoid only for evaluation/inference
 
 
 # Flax requires explicit param init — weights live in a separate dict, not the model
@@ -462,7 +488,8 @@ dummy_features = jnp.zeros((1, 3), dtype=jnp.float32)
 params = model.init(key, dummy_tokens, dummy_features)  # params is a dict
 
 # inference
-output = model.apply(params, dummy_tokens, dummy_features)
+logits = model.apply(params, dummy_tokens, dummy_features)
+probability = jax.nn.sigmoid(logits)
 ```
 
 ### Why These Activation Functions
@@ -481,24 +508,18 @@ probability score
 ```python
 def weighted_bce_loss(params, model, x_tokens, x_features, y, key):
     # run batch through model — Flax passes params separately via apply()
-    preds = model.apply(
+    logits = model.apply(
         params, x_tokens, x_features, training=False,
         rngs={"dropout": key}
     )
-    preds = jnp.squeeze(preds)
-
-    # weighted BCE: penalize missing a viral moment more than false alarming
-    loss = -(
-        pos_weight * y * jnp.log(preds + 1e-7) +
-        (1 - y) * jnp.log(1 - preds + 1e-7)
-    )
-    return jnp.mean(loss)
+    loss = optax.sigmoid_binary_cross_entropy(logits, y)
+    weights = 1.0 + y * (pos_weight - 1.0)
+    return jnp.mean(loss * weights)
 ```
 
-`pos_weight` should reflect your class ratio. If you have 4x more negatives than
-positives, start with `pos_weight = 4.0` and tune from there.
-
-The `1e-7` epsilon prevents `log(0)` from producing NaN or -inf.
+Calculate `pos_weight` as negative/positive count from the training split only.
+Logit-space BCE is numerically stable and avoids clipping saturated
+probabilities.
 
 ---
 
@@ -561,14 +582,24 @@ Use:
 
 - **Precision** — of moments the model called viral, how many actually were?
 - **Recall** — of actual viral moments, how many did the model catch?
-- **F1 Score** — harmonic mean of precision and recall, the primary metric
+- **F1 Score** — threshold-specific balance of precision and recall
+- **Average precision (AP)** — prevalence-aware ranking metric used for checkpoint selection
 - **Confusion matrix** — visualize false positives vs false negatives
 - **AUC-ROC** — threshold-independent measure of classifier quality
 
-Tune the classification threshold (default 0.5) based on your preference:
+Tune the classification threshold based on the user's clipping sensitivity:
 
-- Lower threshold → more clips, more false positives
-- Higher threshold → fewer clips, might miss things
+- **Strict / higher threshold** → fewer candidates and less review work, but more
+  potentially good moments are missed.
+- **Balanced / middle threshold** → compromise between candidate quality and coverage.
+- **Discovery / lower threshold** → more candidates and higher recall, but more review
+  work.
+
+Do not display the raw threshold as a literal confidence percentage unless the model is
+calibrated on representative live-stream data. Prefer user-facing sensitivity presets
+and expected candidates per hour. Offline precision is measured on an intentionally
+enriched positive/negative dataset and will not equal live production precision, where
+true clip moments are much rarer.
 
 ### Streamer-Held-Out Validation
 
@@ -599,10 +630,10 @@ Use a two-layer strategy:
 1. **Global base model** — train on clips and chat windows from many streamers across
   categories. This model learns universal clippability signals such as chat
    acceleration, repeated reactions, user participation bursts, and hype decay.
-2. **Per-streamer calibration** — tune lightweight settings per streamer instead of
-  retraining the full model by default. Examples include `clip_threshold`, baseline
-   chat velocity, minimum unique users, cooldown duration, post-detection delay, and
-   streamer-specific emote vocabulary.
+2. **Per-streamer sensitivity calibration** — tune lightweight settings per streamer
+  instead of retraining the full model by default. Examples include the thresholds
+  behind Strict/Balanced/Discovery, baseline chat velocity, minimum unique users,
+  cooldown duration, post-detection delay, and streamer-specific emote vocabulary.
 
 For new streamers, start in calibration/suggestion mode:
 
@@ -610,8 +641,9 @@ For new streamers, start in calibration/suggestion mode:
 2. Save candidate high-score moments.
 3. Compare predictions against actual Twitch clips, manual approvals, and rejected
   candidates.
-4. Adjust streamer-specific thresholds, cooldowns, and minimum activity requirements.
-5. Feed approved/rejected moments back into future training data.
+4. Measure candidates per stream-hour and accepted-candidate rate at each sensitivity.
+5. Adjust streamer-specific thresholds, cooldowns, and minimum activity requirements.
+6. Feed approved/rejected moments back into future training data.
 
 For high-value customers, offer optional custom fine-tuning on that streamer's
 historical clips and chat logs. This becomes a paid product feature: generic AI
@@ -625,11 +657,11 @@ specific chat culture.
 
 | Parameter        | Starting Value | Notes                                   |
 | ---------------- | -------------- | --------------------------------------- |
-| `embed_dim`      | 64             | Embedding size per token                |
-| `hidden_dim`     | 128            | GRU hidden state size                   |
+| `embed_dim`      | 32             | Raise only after learning curves justify more capacity |
+| `hidden_dim`     | 64             | Raise only after learning curves justify more capacity |
 | `learning_rate`  | 1e-3           | Adam default, reduce if unstable        |
 | `dropout`        | 0.3            | Regularization, increase if overfitting |
-| `pos_weight`     | 4.0            | Match your negative:positive ratio      |
+| `pos_weight`     | auto           | Training-split negative:positive ratio  |
 | `batch_size`     | 32             | Increase if training is slow            |
 | `window_seconds` | 30             | Chat window size                        |
 | `max_seq_len`    | 512            | Token sequence cap                      |
@@ -749,7 +781,9 @@ Each goroutine runs this loop independently:
 1. Maintains a rolling 30-second buffer of chat messages for its streamer
 2. Every 2–3 seconds, encodes the current buffer into tokens + feature vector
 3. Runs inference via onnxruntime-go
-4. If score > the streamer's configured `clip_threshold` → wait `post_detection_delay_seconds` → fire Twitch Clip API → set `cooldown_seconds`
+4. If score exceeds the threshold behind the selected clipping sensitivity → either
+   enqueue the candidate for review or wait `post_detection_delay_seconds` and fire the
+   Twitch Clip API → set `cooldown_seconds`
 
 The vocabulary file (token → int mapping) gets shipped alongside the ONNX model so
 Go can tokenize identically to how Python tokenized during training.
@@ -774,14 +808,16 @@ The aftermath is often the funniest part. The delay is worth it.
 
 - [x] Data collection scripts pull top clips and chat replays for stableronaldo and jasontheween
 - [x] Negative examples collected and dataset balanced
-- [ ] Tokenizer built from collected chat corpus
-- [ ] Chat windows encoded into sequence tensors
-- [ ] GRU classifier implemented in Flax
-- [ ] Weighted BCE loss implemented
-- [ ] Training loop runs without NaN loss
+- [x] Tokenizer built from collected chat corpus
+- [x] Chat windows encoded into sequence tensors
+- [x] GRU classifier implemented in Flax
+- [x] Weighted logit-space BCE loss implemented
+- [x] Training loop runs without NaN loss
 - [ ] F1 score > 0.75 on held-out validation set
 - [ ] Streamer-held-out validation confirms the model generalizes to unseen channels
-- [ ] Per-streamer calibration settings documented and loaded by the Go clipper
+- [ ] Strict/Balanced/Discovery sensitivity presets calibrated in shadow mode
+- [ ] Per-streamer sensitivity settings documented and loaded by the Go clipper
+- [ ] Approval/rejection feedback persists for future retraining
 - [ ] Model exported to ONNX successfully
 - [ ] Inference script confirms ONNX output matches JAX model output
 - [ ] Vocabulary file exported alongside ONNX model for Go tokenization

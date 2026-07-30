@@ -1,12 +1,52 @@
 import os
 import json
+import random
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import pandas as pd
 import requests
+import yaml
 
 # The standard Twitch Web Client ID used for public GraphQL requests
 TWITCH_GQL_CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko"
 TWITCH_GQL_URL = "https://gql.twitch.tv/gql"
+
+DEFAULT_MAX_WORKERS = 6
+
+
+def get_max_workers():
+    """Read max_workers from config.yaml (falls back to a safe default)."""
+    try:
+        with open("config.yaml", "r") as f:
+            config = yaml.safe_load(f)
+        return int(config.get("twitch", {}).get("clips", {}).get("max_workers", DEFAULT_MAX_WORKERS))
+    except Exception:
+        return DEFAULT_MAX_WORKERS
+
+
+def request_with_backoff(payload, headers, max_retries=5):
+    """POST to the GQL endpoint with exponential backoff on transient failures.
+
+    Retries on network errors and HTTP 429/5xx. Returns the parsed JSON, or None
+    if all retries are exhausted.
+    """
+    delay = 1.0
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(TWITCH_GQL_URL, json=payload, headers=headers, timeout=20)
+            if response.status_code == 429 or response.status_code >= 500:
+                raise requests.exceptions.HTTPError(f"HTTP {response.status_code}")
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            if attempt == max_retries - 1:
+                print(f"    Request failed after {max_retries} attempts: {e}")
+                return None
+            # Exponential backoff with jitter to avoid thundering-herd retries.
+            time.sleep(delay + random.uniform(0, 0.5))
+            delay *= 2
+    return None
 
 def fetch_chat_window(vod_id, start_offset_seconds, end_offset_seconds):
     """
@@ -65,9 +105,9 @@ def fetch_chat_window(vod_id, start_offset_seconds, end_offset_seconds):
         }
 
         try:
-            response = requests.post(TWITCH_GQL_URL, json=payload, headers=headers)
-            response.raise_for_status()
-            data = response.json()
+            data = request_with_backoff(payload, headers)
+            if data is None:
+                break
 
             # Surface GraphQL errors instead of silently treating them as empty
             if data.get("errors"):
@@ -129,78 +169,90 @@ def fetch_chat_window(vod_id, start_offset_seconds, end_offset_seconds):
             else:
                 next_offset = next_offset + 1
 
-            # Be polite to the undocumented API
-            time.sleep(0.1)
-
         except Exception as e:
             print(f"    Error fetching chunk: {e}")
             break
 
     return messages
 
+def process_clip(row, chat_dir):
+    """Fetch and save one clip's chat window. Returns a status string."""
+    clip_id = row["clip_id"]
+    vod_id = row["vod_id"]
+    vod_offset = row["vod_offset"]
+
+    output_file = os.path.join(chat_dir, f"{clip_id}.json")
+
+    # Skip if we already downloaded this chat window (resumability)
+    if os.path.exists(output_file):
+        return "skipped"
+
+    # Target window: 30 seconds before the clip starts, up to 5 seconds into it
+    start_time = max(0, vod_offset - 30)
+    end_time = vod_offset + 5
+
+    messages = fetch_chat_window(vod_id, start_time, end_time)
+
+    if not messages:
+        return "empty"
+
+    with open(output_file, "w", encoding="utf-8") as f:
+        json.dump({
+            "clip_id": clip_id,
+            "vod_id": vod_id,
+            "target_offset": vod_offset,
+            "window_start": start_time,
+            "window_end": end_time,
+            "message_count": len(messages),
+            "messages": messages,
+        }, f, indent=2, ensure_ascii=False)
+    return "fetched"
+
+
 def main():
     clips_file = "data/raw/clips.csv"
     chat_dir = "data/raw/chat"
-    
+
     if not os.path.exists(clips_file):
         print(f"Error: {clips_file} not found. Please run fetch_clips.py first.")
         return
-        
+
     os.makedirs(chat_dir, exist_ok=True)
-    
+
     print(f"Loading clips from {clips_file}...")
     df = pd.read_csv(clips_file)
-    
     total_clips = len(df)
-    print(f"Found {total_clips} clips to process.")
-    
-    fetched_count = 0
-    skipped_count = 0
-    error_count = 0
+    max_workers = get_max_workers()
+    print(f"Found {total_clips} clips. Fetching with {max_workers} workers...")
 
-    for index, row in df.iterrows():
-        clip_id = row['clip_id']
-        vod_id = row['vod_id']
-        vod_offset = row['vod_offset']
-        
-        output_file = os.path.join(chat_dir, f"{clip_id}.json")
-        
-        # Skip if we already downloaded this chat window (resumability)
-        if os.path.exists(output_file):
-            skipped_count += 1
-            continue
-            
-        print(f"[{index + 1}/{total_clips}] Fetching chat for Clip: {clip_id} (VOD: {vod_id}, Offset: {vod_offset}s)")
-        
-        # Target window: 30 seconds before the clip starts, up to 5 seconds into it
-        start_time = max(0, vod_offset - 30)
-        end_time = vod_offset + 5
-        
-        messages = fetch_chat_window(vod_id, start_time, end_time)
-        
-        if messages:
-            with open(output_file, 'w', encoding='utf-8') as f:
-                json.dump({
-                    "clip_id": clip_id,
-                    "vod_id": vod_id,
-                    "target_offset": vod_offset,
-                    "window_start": start_time,
-                    "window_end": end_time,
-                    "message_count": len(messages),
-                    "messages": messages
-                }, f, indent=2, ensure_ascii=False)
-            fetched_count += 1
-        else:
-            print(f"    Warning: No messages found in window for clip {clip_id}")
-            error_count += 1
-            
-        # Rate limiting protection
-        time.sleep(0.5)
+    counts = {"fetched": 0, "skipped": 0, "empty": 0}
+    done = 0
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(process_clip, row, chat_dir): row["clip_id"]
+            for _, row in df.iterrows()
+        }
+        for future in as_completed(futures):
+            clip_id = futures[future]
+            try:
+                status = future.result()
+            except Exception as e:
+                print(f"    Error on {clip_id}: {e}")
+                status = "empty"
+            counts[status] = counts.get(status, 0) + 1
+            done += 1
+            if done % 50 == 0 or done == total_clips:
+                print(
+                    f"[{done}/{total_clips}] fetched={counts['fetched']} "
+                    f"skipped={counts['skipped']} empty={counts['empty']}"
+                )
 
     print("\n--- Summary ---")
-    print(f"Successfully fetched: {fetched_count}")
-    print(f"Already existed (skipped): {skipped_count}")
-    print(f"No messages / Errors: {error_count}")
+    print(f"Successfully fetched: {counts['fetched']}")
+    print(f"Already existed (skipped): {counts['skipped']}")
+    print(f"No messages / Errors: {counts['empty']}")
+
 
 if __name__ == "__main__":
     main()

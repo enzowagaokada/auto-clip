@@ -1,23 +1,16 @@
-"""Weighted binary cross-entropy.
-
-Positives (clippable moments) are rare, so we weight them more heavily to
-penalize missed viral moments more than false alarms. Set pos_weight roughly to
-the negative:positive ratio (~3.66 for the current dataset).
-"""
+"""Numerically stable weighted binary cross-entropy on model logits."""
 
 import jax.numpy as jnp
+import optax
 
-EPS = 1e-7
 
-
-def weighted_bce(preds, labels, pos_weight):
+def weighted_bce(logits, labels, pos_weight):
     """Mean weighted BCE over a batch.
 
-    preds, labels: (batch,) float arrays. preds are probabilities in (0, 1).
+    ``pos_weight`` is normally calculated from the training split rather than
+    hardcoded. Keeping the model output as logits avoids saturated sigmoid/log
+    gradients.
     """
-    preds = jnp.clip(preds, EPS, 1.0 - EPS)
-    loss = -(
-        pos_weight * labels * jnp.log(preds)
-        + (1.0 - labels) * jnp.log(1.0 - preds)
-    )
-    return jnp.mean(loss)
+    losses = optax.sigmoid_binary_cross_entropy(logits, labels)
+    weights = 1.0 + labels * (pos_weight - 1.0)
+    return jnp.mean(losses * weights)

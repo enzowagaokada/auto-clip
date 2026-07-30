@@ -5,7 +5,16 @@ data:
 twitch:
   clips:
     days_back: 30
+    # max_per_streamer is the cap PER date-window (see window_days), not overall.
+    # Total per streamer is roughly (days_back / window_days) * max_per_streamer.
     max_per_streamer: 100
+    # Slice the date range into windows and fetch top clips per window. Smaller
+    # windows harvest many more unique clips (top-N per week vs top-N per month).
+    window_days: 7
+    # Parallel workers for chat fetching (fetch_chat.py / fetch_negatives.py).
+    # Higher = faster but more likely to hit Twitch rate limits. Lower if you see
+    # repeated backoff/429 errors.
+    max_workers: 6
   streamers:
     - name: "stableronaldo"
       broadcaster_id: "246450563"
@@ -13,15 +22,35 @@ twitch:
     - name: "jasontheween"
       broadcaster_id: "107117952"
       active: true
-
+    - name: "adapt"
+      broadcaster_id: "211234859"
+      active: true
+    - name: "lacy"
+      broadcaster_id: "494543675"
+      active: true
+    - name: "marlon"
+      broadcaster_id: "1019733647"
+      active: true
 model:
-  embed_dim: 64
-  hidden_dim: 128
+  embed_dim: 32
+  hidden_dim: 64
   max_seq_len: 512
+  max_vocab_size: 10000
+  min_token_frequency: 3
+  embedding_dropout_rate: 0.15
+  head_dropout_rate: 0.4
 
 training:
   learning_rate: 0.001
+  weight_decay: 0.0001
   batch_size: 32
   epochs: 20
-  pos_weight: 4.0
+  # "auto" calculates negatives / positives from the training split only.
+  pos_weight: "auto"
   window_seconds: 30
+  validation_fraction: 0.2
+  early_stopping_patience: 3
+  early_stopping_min_delta: 0.0001
+  selection_metric: "average_precision"
+  # Fixed denominator makes stream-time normalization reproducible in Go.
+  stream_time_scale_seconds: 43200

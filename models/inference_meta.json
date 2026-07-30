@@ -1,26 +1,72 @@
 {
-  "vocab_size": 17580,
-  "embed_dim": 64,
-  "hidden_dim": 128,
+  "vocab_size": 10000,
+  "embed_dim": 32,
+  "hidden_dim": 64,
   "max_seq_len": 512,
-  "num_features": 3,
+  "num_features": 13,
   "feature_names": [
     "messages_per_second",
     "unique_users",
-    "normalized_stream_time"
+    "normalized_stream_time",
+    "message_rate_0_5s",
+    "message_rate_5_10s",
+    "message_rate_10_15s",
+    "message_rate_15_20s",
+    "message_rate_20_25s",
+    "message_rate_25_30s",
+    "message_rate_30_35s",
+    "message_rate_change",
+    "peak_5s_rate",
+    "repeat_message_ratio"
   ],
   "feature_mean": [
-    6.2756829261779785,
-    150.0987091064453,
-    0.0
+    4.909741401672363,
+    114.32282257080078,
+    0.0,
+    7.462988376617432,
+    4.201957702636719,
+    4.275782585144043,
+    4.387563228607178,
+    4.42280912399292,
+    4.431886196136475,
+    5.183012008666992,
+    -1.0250258445739746,
+    8.417400360107422,
+    0.2964402437210083
   ],
   "feature_std": [
-    3.2018325328826904,
-    76.5377426147461,
-    1.0
+    3.20357608795166,
+    73.61835479736328,
+    1.0,
+    4.071471214294434,
+    3.4497735500335693,
+    3.4535844326019287,
+    3.51374888420105,
+    3.530452013015747,
+    3.5570855140686035,
+    4.099308013916016,
+    2.835045576095581,
+    4.215555191040039,
+    0.1637079417705536
   ],
-  "max_offset": 165583,
-  "threshold": 0.5,
-  "best_val_f1": 0.5625,
-  "split": "random 80/20 split"
+  "stream_time_scale_seconds": 43200,
+  "threshold": 0.3549999999999999,
+  "best_epoch": 3,
+  "best_val_metrics": {
+    "precision": 0.40768409818569906,
+    "recall": 0.7549407114624506,
+    "f1": 0.5294525294525295,
+    "auc": 0.6833059466181107,
+    "average_precision": 0.4674623294142771,
+    "confusion": {
+      "tp": 382,
+      "fp": 555,
+      "fn": 124,
+      "tn": 602
+    }
+  },
+  "selection_metric": "average_precision",
+  "pos_weight": 2.2881944444444446,
+  "split": "VOD-grouped 80%/20% split",
+  "seed": 0
 }
