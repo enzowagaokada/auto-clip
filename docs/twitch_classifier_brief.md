@@ -64,7 +64,7 @@ This means it generalizes to new emotes automatically.
 | Data processing        | Pandas, NumPy                                  |
 | Tokenization           | Simple custom vocab or SentencePiece           |
 | Experiment tracking    | Weights & Biases (wandb) — optional            |
-| Model export           | ONNX (via jax2tf → tf2onnx) for Go integration |
+| Model export           | ONNX (direct via `jax2onnx`) for Go integration |
 
 
 ---
@@ -93,15 +93,16 @@ This means it generalizes to new emotes automatically.
     loss.py               ← weighted binary cross entropy
     train.py              ← training loop with JAX + Optax
     evaluate.py           ← precision, recall, F1, confusion matrix
-    export.py             ← export trained model to ONNX
 
-  /inference
-    predict.py            ← load model, run inference on a chat window
+  /export
+    export_onnx.py        ← export a saved run to an ONNX deployment bundle
+    verify_onnx.py        ← compare JAX and ONNX outputs
 
-/cmd
-  /autoclip               ← Go application entrypoint
+/clipper                  ← standalone Go module
+  /cmd/autoclip           ← live shadow-clipper entrypoint
+  /internal               ← Twitch, preprocessing, inference, candidate logging
 
-/models                   ← Exported ONNX and vocab files
+/models/exports           ← generated ONNX deployment bundles
 
 config.yaml               ← hyperparameters, streamer list, data paths
 requirements.txt
@@ -206,9 +207,9 @@ Goal: use the trained ONNX model in a real-time Go clipper.
 Planned:
 
 - Connect to live Twitch chat.
-- Maintain a rolling 30-second buffer per streamer.
+- Maintain a rolling 35-second buffer and score the target at `now - 5s`.
 - Run ONNX inference every 2-3 seconds.
-- Trigger the Twitch Clip API after the configured delay.
+- Log deduplicated candidates in shadow mode.
 - Respect cooldown and per-streamer thresholds.
 
 ### Phase 8 — Product / Business Layer
@@ -672,67 +673,38 @@ specific chat culture.
 
 ## Model Export to ONNX (for Go integration)
 
-After training, export the model so the Go clipper can run inference without Python:
+`jax2tf(..., enable_xla=False) -> tf2onnx` is no longer the supported path:
+JAX deprecated conversion to TensorFlow ops and recommends StableHLO for its
+official export surface. This project instead uses `jax2onnx`, whose Flax Linen
+coverage includes `RNN` and `GRUCell`.
 
-```python
-# export.py
-import jax
-import jax.numpy as jnp
-from jax.experimental import jax2tf
-import tensorflow as tf
-import tf2onnx
+`training/export/export_onnx.py` loads a complete saved run and exports an
+inference-only forward function. The function applies the exact saved
+`flax.linen.GRUCell` equations explicitly with `jax.lax.scan`, because current
+`jax2onnx` tracing turns a shape inside Linen's lifted `nn.RNN` into a
+`JitTracer`. Before export, the script asserts this explicit forward matches
+the original `model.apply(..., training=False)` logits.
 
-# trace the model
-dummy_tokens = jnp.zeros((1, MAX_SEQ_LEN), dtype=jnp.int32)
-dummy_features = jnp.zeros((1, 3), dtype=jnp.float32)
+The exported contract is:
 
-tf_fn = jax2tf.convert(
-    lambda tok, feat: model(tok, feat, jax.random.PRNGKey(0), inference=True),
-    enable_xla=False
-)
+- `tokens`: `(batch, 512)` `int32`;
+- `features`: `(batch, 13)` `float32`;
+- `logits`: `(batch,)` `float32`.
 
-# save as ONNX
-onnx_model, _ = tf2onnx.convert.from_function(
-    tf_fn,
-    input_signature=[
-        tf.TensorSpec((1, MAX_SEQ_LEN), tf.int32),
-        tf.TensorSpec((1, 3), tf.float32)
-    ]
-)
-
-with open("chat_classifier.onnx", "wb") as f:
-    f.write(onnx_model.SerializeToString())
-```
-
-The Go clipper then loads `chat_classifier.onnx` via `onnxruntime-go` and runs
-inference locally — no Python needed at runtime.
+The generated bundle also contains the saved vocabulary, inference metadata,
+and a checksum manifest. `training/export/verify_onnx.py` must compare real
+validation rows in JAX and ONNX Runtime before the bundle is used by Go.
 
 ---
 
 ## Go Integration (how the classifier plugs into the clipper)
 
-### One goroutine per streamer
+### Shared connection, isolated streamer processors
 
-Each streamer gets its own goroutine — a lightweight concurrent process in Go. They
-all run in parallel, completely independently. If you are watching 5 streamers, 5
-goroutines are running simultaneously, each with its own chat buffer, inference loop,
-and cooldown timer. They do not share state or interfere with each other.
-
-```go
-func main() {
-    streamers := loadStreamersFromConfig()  // reads config.yaml
-
-    var wg sync.WaitGroup
-    for _, streamer := range streamers {
-        wg.Add(1)
-        go func(s StreamerConfig) {
-            defer wg.Done()
-            watchStreamer(s)  // blocks forever, runs the full loop for this streamer
-        }(streamer)
-    }
-    wg.Wait()
-}
-```
+Use one Twitch EventSub WebSocket and subscribe it to every active configured
+channel. A router dispatches notifications to per-streamer processors, each
+with its own chat buffer, inference state, cooldown, and counters. Twitch
+explicitly recommends one WebSocket connection until another is needed.
 
 ### Choosing which streamers to watch
 
@@ -778,29 +750,28 @@ chat may need a lower threshold so the model does not miss genuinely important m
 
 Each goroutine runs this loop independently:
 
-1. Maintains a rolling 30-second buffer of chat messages for its streamer
-2. Every 2–3 seconds, encodes the current buffer into tokens + feature vector
+1. Maintains a rolling 35-second buffer ending at the current notification time
+2. Every 2–3 seconds, scores the target at `now - 5s`
 3. Runs inference via onnxruntime-go
-4. If score exceeds the threshold behind the selected clipping sensitivity → either
-   enqueue the candidate for review or wait `post_detection_delay_seconds` and fire the
-   Twitch Clip API → set `cooldown_seconds`
+4. On a below-to-above threshold crossing, writes a shadow candidate and starts
+   the cooldown; the detector must fall below threshold before it can rearm
 
 The vocabulary file (token → int mapping) gets shipped alongside the ONNX model so
 Go can tokenize identically to how Python tokenized during training.
 
-### Why the Delay Before Clipping
+### Why live inference has a five-second target lag
 
-Twitch clips save approximately the last 2 minutes of stream content when triggered.
-If you clip immediately when the model fires, you capture the buildup but miss the
-aftermath — the streamer's delayed reaction, chat spam peaking, the follow-up moment.
+Historical positive windows span from 30 seconds before the clip target through
+5 seconds after it. Live parity therefore requires waiting until `target + 5s`
+and scoring the 35-second range `[target - 30s, target + 5s]`. A plain rolling
+30-second window would drop one trained temporal bucket and change the
+messages-per-second feature.
 
-By waiting 20-30 seconds after detection before firing the clip API, you capture:
-
-- ~90 seconds of buildup leading into the moment
-- The moment itself
-- 20-30 seconds of streamer and chat reaction afterward
-
-The aftermath is often the funniest part. The delay is worth it.
+The first live milestone is shadow-only. A later Clip API sink can add a
+separate post-detection delay after live acceptance is high enough. Twitch's
+current Create Clip behavior uses a 90-second capture window and publishes up
+to the last 30 seconds by default; the old `has_delay` parameter has been
+removed and must not be used.
 
 ---
 
@@ -818,9 +789,9 @@ The aftermath is often the funniest part. The delay is worth it.
 - [ ] Strict/Balanced/Discovery sensitivity presets calibrated in shadow mode
 - [ ] Per-streamer sensitivity settings documented and loaded by the Go clipper
 - [ ] Approval/rejection feedback persists for future retraining
-- [ ] Model exported to ONNX successfully
-- [ ] Inference script confirms ONNX output matches JAX model output
-- [ ] Vocabulary file exported alongside ONNX model for Go tokenization
+- [x] Model exported to ONNX successfully
+- [x] Inference script confirms ONNX output matches JAX model output
+- [x] Vocabulary file exported alongside ONNX model for Go tokenization
 
 ---
 

@@ -30,6 +30,10 @@ models/runs/
 
 # Export / tracking artifacts
 *.onnx
+models/exports/
+clipper/runtime/
+clipper/*.exe
+data/live/
 wandb/
 .pytest_cache/
 .mypy_cache/

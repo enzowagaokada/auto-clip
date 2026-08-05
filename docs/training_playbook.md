@@ -213,6 +213,29 @@ fields are present. The Go inference implementation must reproduce:
 
 Any mismatch between Python and Go preprocessing invalidates model scores.
 
+## Export and verify the deployment model
+
+Export only from an accepted saved run. The current deployment source is
+`models/runs/reviewed-vod-seed0`; do not use the older root-level model files.
+
+Run these commands from the repository root:
+
+```powershell
+python training/export/export_onnx.py
+python training/export/verify_onnx.py
+```
+
+The exporter writes a generated bundle to
+`models/exports/reviewed-vod-seed0/` containing the ONNX graph, saved
+vocabulary, inference metadata, and checksum manifest. Verification checks the
+graph contract and compares JAX and ONNX logits/sigmoid decisions over the
+reconstructed saved validation split. Do not start the Go clipper if parity or
+manifest verification fails.
+
+Live inference intentionally uses a five-second lag. At time `now`, score the
+target at `now - 5s` from the 35-second chat window `[now - 35s, now]`. This is
+the live equivalent of the historical `[target - 30s, target + 5s]` window.
+
 ## Release gate
 
 Before charging users, run shadow mode on unseen streams and have humans rate

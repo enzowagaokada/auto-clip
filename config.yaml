@@ -31,6 +31,27 @@ twitch:
     - name: "marlon"
       broadcaster_id: "1019733647"
       active: true
+
+# Standalone Go shadow clipper. clip_threshold is intentionally omitted here,
+# so inference_meta.json supplies the model's saved threshold. It may be set
+# globally here or overridden per twitch.streamers entry.
+clipper:
+  mode: "shadow"
+  bundle_dir: "models/exports/reviewed-vod-seed0"
+  runtime_dll_path: "clipper/runtime/onnxruntime.dll"
+  cooldown_seconds: 75
+  window_seconds: 35
+  target_lag_seconds: 5
+  inference_millis: 2500
+  stream_poll_seconds: 30
+  chat_buffer_size: 4096
+  candidates_path: "data/live/shadow/candidates.jsonl"
+  sessions_path: "data/live/shadow/sessions.jsonl"
+  tokens_input_name: "tokens"
+  features_input_name: "features"
+  output_name: "logits"
+  output_is_logit: true
+
 model:
   embed_dim: 32
   hidden_dim: 64

@@ -1,6 +1,6 @@
 # Project Status (Living Doc)
 
-**Last updated:** 2026-07-29
+**Last updated:** 2026-08-04
 
 Agents and humans: read this first for current state and next actions.
 Deep methodology lives in `docs/twitch_classifier_brief.md`.
@@ -10,7 +10,7 @@ Training details live in `docs/training_playbook.md`.
 
 ## One-line status
 
-Chat-only GRU clip-candidate model works on new VODs. Next product step is ONNX export + live Go clipper in shadow/suggestion mode. Do not wait for perfect auto-clipping.
+The production ONNX bundle passes export/parity checks, and the Go clipper's normal and race-detector tests pass. Next: historical replay, then the first authenticated live shadow session.
 
 ---
 
@@ -32,9 +32,9 @@ Chat-only GRU clip-candidate model works on new VODs. Next product step is ONNX 
 | Train / evaluate / holdout / review loop | Done |
 | Untouched-VOD evaluation | Done (baseline recorded) |
 | Hard-negative sample weighting | Not built yet |
-| ONNX export | Not started |
-| Go live clipper | Not started |
-| Shadow-mode acceptance tracking | Not started |
+| ONNX export | Done; JAX/ONNX and preprocessing fixture parity passed |
+| Go live clipper | Implemented; normal and race-detector tests passed; replay/live smoke pending |
+| Shadow-mode acceptance tracking | Candidate/session JSONL implemented; no live data yet |
 | Paid product / UI | Later |
 
 ---
@@ -78,7 +78,12 @@ Random AP baseline ≈ positive prevalence ≈ **0.33**. This is meaningfully be
 4. Manual reviews go through `import_reviews.py` → `data/reviews/window_labels.csv`. Never only edit `dataset.jsonl`.
 5. Product framing is **clipping sensitivity + review queue**, not raw “confidence %”.
 6. Current model capacity (embed 32 / GRU 64 / vocab 10k) is intentional for current data size.
-7. Next major engineering priority: **ONNX + Go live path**, not another big retrain.
+7. Export directly with `jax2onnx`; the old `jax2tf -> tf2onnx` route is deprecated.
+8. Export uses explicit saved GRU equations because `jax2onnx` cannot trace the
+   current Flax lifted `nn.RNN`; the exporter first asserts exact Flax parity.
+9. Live parity requires `[now - 35s, now]` and scores target `now - 5s`.
+10. The first Go release is hard-gated to **shadow mode** and contains no Create Clip path.
+11. Live chat uses one Twitch EventSub WebSocket and a user token with `user:read:chat`.
 
 ---
 
@@ -93,6 +98,10 @@ Random AP baseline ≈ positive prevalence ≈ **0.33**. This is meaningfully be
 | `data/splits/untouched_vods.txt` | New VODs used for the recorded untouched test |
 | `models/runs/reviewed-vod-seed0/` | Current candidate production model |
 | `models/runs/reviewed-vod-seed0/analysis-untouched_vods/` | Untouched-test outputs |
+| `training/export/` | Direct ONNX export and parity tools |
+| `models/exports/reviewed-vod-seed0/` | Generated deployment bundle (after export) |
+| `clipper/` | Standalone Go shadow clipper |
+| `docs/live_clipper.md` | Setup, verification, replay, and live runbook |
 | `docs/training_playbook.md` | How to train / interpret metrics |
 | `docs/twitch_classifier_brief.md` | Full product/ML brief |
 
@@ -102,12 +111,17 @@ Random AP baseline ≈ positive prevalence ≈ **0.33**. This is meaningfully be
 
 ### 1. Build live path (do this next)
 
-- [ ] Implement ONNX export from current JAX/Flax model
-- [ ] Verify ONNX outputs match JAX logits/sigmoid closely
-- [ ] Build Go rolling 30s chat buffer + inference loop
-- [ ] Add cooldown + post-detection delay
-- [ ] Log candidates to JSONL/CSV in **shadow mode** (no public auto-clip required)
-- [ ] Track: candidates/hour, acceptance rate, bad suggestions/hour
+- [x] Implement direct ONNX export from the current JAX/Flax model
+- [x] Export `models/exports/reviewed-vod-seed0/`
+- [x] Verify ONNX outputs match JAX logits/sigmoid decisions
+- [x] Verify the Go preprocessing fixture against the Python pipeline
+- [x] Build Go 35s rolling buffer + 5s target lag + inference loop
+- [x] Add threshold-crossing rearm and cooldown
+- [x] Log candidates and session counters to JSONL in hard-gated shadow mode
+- [x] Run normal Go tests and race-detector tests
+- [ ] Run historical replay against representative positive and negative windows
+- [ ] Run the first authenticated live shadow-mode smoke test
+- [ ] Review live candidates and track acceptance rate / bad suggestions per hour
 
 ### 2. Improve model in parallel / after shadow data
 
