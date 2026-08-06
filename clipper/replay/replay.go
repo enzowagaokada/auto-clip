@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"auto-clip/clipper/core"
@@ -15,14 +16,34 @@ import (
 	"auto-clip/clipper/store"
 )
 
+type stringOrNumber string
+
+func (value *stringOrNumber) UnmarshalJSON(data []byte) error {
+	var text string
+	if err := json.Unmarshal(data, &text); err == nil {
+		*value = stringOrNumber(text)
+		return nil
+	}
+
+	var number json.Number
+	if err := json.Unmarshal(data, &number); err != nil {
+		return errors.New("must be a string or integer")
+	}
+	if _, err := strconv.ParseUint(number.String(), 10, 64); err != nil {
+		return fmt.Errorf("must be an unsigned integer: %w", err)
+	}
+	*value = stringOrNumber(number.String())
+	return nil
+}
+
 type RawWindow struct {
-	StreamerName string       `json:"streamer_name"`
-	ClipID       string       `json:"clip_id"`
-	VODID        string       `json:"vod_id"`
-	TargetOffset float64      `json:"target_offset"`
-	WindowStart  float64      `json:"window_start"`
-	WindowEnd    float64      `json:"window_end"`
-	Messages     []RawMessage `json:"messages"`
+	StreamerName string         `json:"streamer_name"`
+	ClipID       string         `json:"clip_id"`
+	VODID        stringOrNumber `json:"vod_id"`
+	TargetOffset float64        `json:"target_offset"`
+	WindowStart  float64        `json:"window_start"`
+	WindowEnd    float64        `json:"window_end"`
+	Messages     []RawMessage   `json:"messages"`
 }
 
 type RawMessage struct {
@@ -98,12 +119,13 @@ func runFile(path string, options Options) (Result, error) {
 	if streamer == "" {
 		streamer = filepath.Base(path)
 	}
+	vodID := string(raw.VODID)
 	machine, err := detection.New(options.Threshold, options.Cooldown)
 	if err != nil {
 		return Result{}, err
 	}
 	session, err := core.NewSession(core.Options{
-		Streamer: streamer, StreamID: raw.VODID, StreamStarted: base,
+		Streamer: streamer, StreamID: vodID, StreamStarted: base,
 		ObservedAt: base.Add(time.Duration(raw.WindowStart * float64(time.Second))),
 		Window:     35 * time.Second, TargetLag: 5 * time.Second,
 		ManifestSHA256: options.ManifestSHA256,
@@ -126,7 +148,7 @@ func runFile(path string, options Options) (Result, error) {
 	}
 	_ = session.Close(at)
 	return Result{
-		Path: path, Streamer: streamer, VODID: raw.VODID, ClipID: raw.ClipID,
+		Path: path, Streamer: streamer, VODID: vodID, ClipID: raw.ClipID,
 		TargetOffset: raw.TargetOffset, Score: evaluation.Score,
 		Threshold: evaluation.Threshold, Candidate: evaluation.Triggered,
 	}, nil

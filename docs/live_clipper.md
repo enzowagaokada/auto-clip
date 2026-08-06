@@ -40,9 +40,18 @@ by Git.
 
 ## 3. Verify and build the Go module
 
-These are the terminal checks reserved for the user:
+The Go clipper uses CGO (ONNX Runtime). On Windows that means a C compiler
+(`gcc`) is required for **normal** `go test` / `go build` as well as
+`go test -race` — plain PowerShell without `gcc` on `PATH` fails.
 
-```powershell
+Install [MSYS2](https://www.msys2.org/), open an **MSYS2 UCRT64** shell, install
+the toolchain, then run the Go commands from that shell (or any terminal where
+`gcc` is on `PATH`):
+
+```bash
+pacman -S --needed mingw-w64-ucrt-x86_64-gcc
+cd /c/Users/<you>/Documents/auto-clip
+
 go -C clipper mod tidy
 go -C clipper fmt ./...
 go -C clipper test ./...
@@ -50,12 +59,10 @@ go -C clipper test -race ./...
 go -C clipper build ./cmd/autoclip
 ```
 
-The normal and race-detector test suites were reported passing on 2026-08-04.
-The historical replay and authenticated live smoke test remain pending.
-
-`-race` requires CGO support and may require a supported C compiler on Windows.
-If that command cannot start because the race toolchain is unavailable, record
-the toolchain error separately; the normal test command is still required.
+These are the terminal checks reserved for the user. The normal and
+race-detector test suites were reported passing on 2026-08-04. The
+positive/negative historical replay also passed after accepting both numeric
+and string VOD IDs. The authenticated live smoke test remains pending.
 
 ## 4. Replay a historical window
 
@@ -132,6 +139,11 @@ crossing occurs, confirm that it is appended to
 `data/live/shadow/candidates.jsonl`. Do not lower the threshold merely to force
 a candidate during the smoke test.
 
+The first authenticated smoke test passed on 2026-08-04: one StableRonaldo
+session ran for about 23 minutes 53 seconds, processed 9,948 messages over 560
+inferences, recorded 15 candidates, and reported zero inference errors.
+Candidate quality still requires human VOD review.
+
 Generated records:
 
 - `data/live/shadow/candidates.jsonl` — reviewable candidate windows, scores,
@@ -142,3 +154,27 @@ Generated records:
 Do not interpret scores as confidence percentages. Review candidates against
 the stream/VOD context before changing thresholds or enabling any future clip
 creation behavior.
+
+## 7. Review shadow candidates against the VOD
+
+Each candidate in `data/live/shadow/candidates.jsonl` contains
+`stream_offset_seconds`, `target_at`, the triggering chat messages, and its
+score. To review one:
+
+1. Query the broadcaster's recent archives with the configured Twitch CLI:
+
+   ```powershell
+   twitch api get /videos -q user_id=246450563 -q type=archive -q first=20
+   ```
+
+2. Find the returned video whose `stream_id` matches the candidate/session
+   `stream_id`. Its `id` is the VOD ID and its `url` is the archive URL.
+3. Seek to `stream_offset_seconds`, starting roughly 30 seconds earlier for
+   context. A timestamped URL has the form
+   `https://www.twitch.tv/videos/VOD_ID?t=6h11m37s`.
+4. Judge the actual video moment, not only the chat messages or score.
+
+The logged `stream_id` identifies the broadcast but differs from the archive
+VOD `id`. If an archive is not returned yet, wait for Twitch to finish
+processing it and retry. There is not yet a dedicated live-review UI or
+importer, so do not edit the append-only candidate log to store decisions.

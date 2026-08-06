@@ -10,7 +10,7 @@ Training details live in `docs/training_playbook.md`.
 
 ## One-line status
 
-The production ONNX bundle passes export/parity checks, and the Go clipper's normal and race-detector tests pass. Next: historical replay, then the first authenticated live shadow session.
+The Go clipper passes export/parity, test, replay, and authenticated live smoke checks. Next: review the first live candidates and measure acceptance quality.
 
 ---
 
@@ -33,9 +33,22 @@ The production ONNX bundle passes export/parity checks, and the Go clipper's nor
 | Untouched-VOD evaluation | Done (baseline recorded) |
 | Hard-negative sample weighting | Not built yet |
 | ONNX export | Done; JAX/ONNX and preprocessing fixture parity passed |
-| Go live clipper | Implemented; normal and race-detector tests passed; replay/live smoke pending |
-| Shadow-mode acceptance tracking | Candidate/session JSONL implemented; no live data yet |
+| Go live clipper | Implemented; tests, replay, and authenticated live smoke passed |
+| Shadow-mode acceptance tracking | First session recorded 15 candidates with zero inference errors; human review pending |
 | Paid product / UI | Later |
+
+---
+
+## First live shadow smoke
+
+- Streamer: `stableronaldo`
+- Session: about 23m 53s, 9,948 messages, 560 inferences
+- Candidates: 15 (about 37.7 per stream-hour in this short sample)
+- Score range: 0.5760–0.8239 at threshold 0.570
+- Inference errors: 0
+
+This proves the live path works; it does not establish candidate quality. Review
+the corresponding VOD moments before changing the threshold.
 
 ---
 
@@ -119,8 +132,8 @@ Random AP baseline ≈ positive prevalence ≈ **0.33**. This is meaningfully be
 - [x] Add threshold-crossing rearm and cooldown
 - [x] Log candidates and session counters to JSONL in hard-gated shadow mode
 - [x] Run normal Go tests and race-detector tests
-- [ ] Run historical replay against representative positive and negative windows
-- [ ] Run the first authenticated live shadow-mode smoke test
+- [x] Run historical replay against representative positive and negative windows
+- [x] Run the first authenticated live shadow-mode smoke test
 - [ ] Review live candidates and track acceptance rate / bad suggestions per hour
 
 ### 2. Improve model in parallel / after shadow data
