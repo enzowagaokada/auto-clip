@@ -10,6 +10,7 @@ other streamers and validates on the held-out one.
 
 import argparse
 import json
+import math
 import os
 
 import jax
@@ -34,7 +35,7 @@ from data import (
 from evaluate import evaluate, find_best_threshold, format_metrics
 from loss import weighted_bce
 
-MODELS_DIR = "models"
+MODELS_DIR = "models/runs/window-v2-vod-seed0"
 
 
 def load_config():
@@ -124,7 +125,32 @@ def main():
     config = load_config()
     model_cfg = config["model"]
     train_cfg = config["training"]
+    window_seconds = int(train_cfg.get("window_seconds", 0))
+    target_lag_seconds = int(train_cfg.get("target_lag_seconds", 0))
+    if window_seconds != 35 or target_lag_seconds != 30:
+        raise ValueError(
+            "training window contract must be 35 seconds with a 30-second "
+            "target lag ([clip start - 5s, clip start + 30s])"
+        )
     rows = load_dataset_rows()
+    for index, row in enumerate(rows):
+        try:
+            target = float(row["target_offset"])
+            start = float(row["window_start"])
+            end = float(row["window_end"])
+            geometry_is_current = (
+                row["window_geometry"] == "clip_start_minus_5_plus_30"
+                and int(row["window_geometry_version"]) == 2
+                and math.isclose(target - start, 5.0, abs_tol=1e-6)
+                and math.isclose(end - target, 30.0, abs_tol=1e-6)
+            )
+        except (KeyError, TypeError, ValueError):
+            geometry_is_current = False
+        if not geometry_is_current:
+            raise ValueError(
+                f"dataset row {index} does not use window geometry v2; "
+                "re-run build_dataset.py before training"
+            )
     num_examples = len(rows)
     explicit_holdout_vod_ids = None
 
@@ -294,6 +320,10 @@ def main():
         "feature_names": FEATURE_NAMES,
         "feature_mean": feature_mean.tolist(),
         "feature_std": feature_std.tolist(),
+        "window_seconds": window_seconds,
+        "target_lag_seconds": target_lag_seconds,
+        "window_geometry": "clip_start_minus_5_plus_30",
+        "window_geometry_version": 2,
         "stream_time_scale_seconds": int(
             train_cfg.get("stream_time_scale_seconds", 43200)
         ),

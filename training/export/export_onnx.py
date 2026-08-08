@@ -32,8 +32,8 @@ from export_common import (
 )
 
 
-DEFAULT_RUN_DIR = Path("models/runs/reviewed-vod-seed0")
-DEFAULT_OUTPUT_DIR = Path("models/exports/reviewed-vod-seed0")
+DEFAULT_RUN_DIR = Path("models/runs/window-v2-vod-seed0")
+DEFAULT_OUTPUT_DIR = Path("models/exports/window-v2-vod-seed0")
 
 
 def package_version(name):

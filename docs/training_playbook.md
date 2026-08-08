@@ -96,7 +96,7 @@ Then rebuild and retrain:
 ```powershell
 python training/collect/build_dataset.py
 python training/features/encode.py
-python training/model/train.py --output-dir models/runs/reviewed-vod-seed0
+python training/model/train.py --output-dir models/runs/window-v2-vod-seed0
 ```
 
 Reviewed positives override the original negative label, reviewed hard
@@ -136,16 +136,19 @@ Create a manifest containing only VOD IDs absent from the baseline:
 python training/collect/create_vod_manifest.py --exclude data/splits/vods_before_collection.txt --output data/splits/untouched_vods.txt
 ```
 
-Evaluate the already-trained reviewed model at its saved threshold:
+Evaluate the already-trained window-v2 model at its saved threshold using a
+fresh manifest that was not used by the legacy model:
 
 ```powershell
-python training/model/analyze_run.py --run-dir models/runs/reviewed-vod-seed0 --vod-manifest data/splits/untouched_vods.txt
+python training/model/analyze_run.py --run-dir models/runs/window-v2-vod-seed0 --vod-manifest data/splits/window_v2_untouched_vods.txt
 ```
 
 External-test output goes to
-`models/runs/reviewed-vod-seed0/analysis-untouched_vods/`. Threshold reports are
-deliberately omitted so the test is not silently used for tuning. Record the
-fixed-threshold metrics before inspecting errors.
+`models/runs/window-v2-vod-seed0/analysis-window_v2_untouched_vods/`. Threshold
+reports are deliberately omitted so the test is not silently used for tuning.
+Record the fixed-threshold metrics before inspecting errors. The previously
+recorded `reviewed-vod-seed0` untouched result remains historical evidence for
+the legacy geometry and must not be recomputed against the rebuilt dataset.
 
 Passing `--explore-thresholds` creates threshold reports, but doing so consumes
 the manifest as a validation/tuning set. It must no longer be described as an
@@ -215,8 +218,9 @@ Any mismatch between Python and Go preprocessing invalidates model scores.
 
 ## Export and verify the deployment model
 
-Export only from an accepted saved run. The current deployment source is
-`models/runs/reviewed-vod-seed0`; do not use the older root-level model files.
+Export only from an accepted saved run. After the geometry migration, the
+deployment source is `models/runs/window-v2-vod-seed0`; the former
+`reviewed-vod-seed0` run and older root-level files use stale geometry.
 
 Run these commands from the repository root:
 
@@ -226,15 +230,21 @@ python training/export/verify_onnx.py
 ```
 
 The exporter writes a generated bundle to
-`models/exports/reviewed-vod-seed0/` containing the ONNX graph, saved
+`models/exports/window-v2-vod-seed0/` containing the ONNX graph, saved
 vocabulary, inference metadata, and checksum manifest. Verification checks the
 graph contract and compares JAX and ONNX logits/sigmoid decisions over the
 reconstructed saved validation split. Do not start the Go clipper if parity or
 manifest verification fails.
 
-Live inference intentionally uses a five-second lag. At time `now`, score the
-target at `now - 5s` from the 35-second chat window `[now - 35s, now]`. This is
-the live equivalent of the historical `[target - 30s, target + 5s]` window.
+Helix `vod_offset` is the start of the clip video. Historical collection uses
+the fixed 35-second window `[clip start - 5s, clip start + 30s]`; clip duration
+is retained as metadata but does not vary the model window. Live inference uses
+the same `[now - 35s, now]` buffer and scores the clip-start-equivalent target
+at `now - 30s`.
+
+Window geometry is versioned in raw data and saved inference metadata. After a
+geometry change, refetch positives and negatives, rebuild the dataset, retrain,
+and re-export. Never change only the Go target lag against an older model.
 
 ## Release gate
 

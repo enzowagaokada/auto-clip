@@ -39,6 +39,10 @@ type Metadata struct {
 	FeatureNames             []string  `json:"feature_names"`
 	FeatureMean              []float32 `json:"feature_mean"`
 	FeatureStandardDeviation []float32 `json:"feature_std"`
+	WindowSeconds            int       `json:"window_seconds"`
+	TargetLagSeconds         int       `json:"target_lag_seconds"`
+	WindowGeometry           string    `json:"window_geometry"`
+	WindowGeometryVersion    int       `json:"window_geometry_version"`
 	StreamTimeScaleSeconds   float64   `json:"stream_time_scale_seconds"`
 	Threshold                float32   `json:"threshold"`
 }
@@ -165,6 +169,15 @@ func (b *Bundle) Validate() error {
 	}
 	if m.StreamTimeScaleSeconds <= 0 {
 		return errors.New("stream_time_scale_seconds must be positive")
+	}
+	if m.WindowSeconds != 35 ||
+		m.TargetLagSeconds != 30 ||
+		m.WindowGeometry != "clip_start_minus_5_plus_30" ||
+		m.WindowGeometryVersion != 2 {
+		return errors.New(
+			"model metadata must use the 35-second " +
+				"[clip start - 5s, clip start + 30s] window contract",
+		)
 	}
 	if m.Threshold < 0 || m.Threshold > 1 {
 		return errors.New("metadata threshold must be in [0, 1]")

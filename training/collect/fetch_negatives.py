@@ -9,12 +9,18 @@ import requests
 
 from fetch_chat import fetch_chat_window, get_max_workers
 from fetch_clips import CLIENT_ID, CLIENT_SECRET, get_app_access_token
+from window_geometry import (
+    WINDOW_AFTER_SECONDS,
+    WINDOW_BEFORE_SECONDS,
+    WINDOW_GEOMETRY_NAME,
+    WINDOW_GEOMETRY_VERSION,
+    has_current_geometry,
+    window_bounds,
+)
 
 
 NEGATIVE_RATIO = 2
 CLIP_EXCLUSION_SECONDS = 60
-WINDOW_BEFORE_SECONDS = 30
-WINDOW_AFTER_SECONDS = 5
 
 
 def parse_twitch_duration(duration):
@@ -50,8 +56,9 @@ def fetch_vod_duration(vod_id, headers):
 
 
 def existing_negative_offsets(output_dir, vod_id):
-    """Return offsets already saved for this VOD as `{vod_id}_{offset}.json`."""
-    offsets = set()
+    """Return current and stale offsets saved as `{vod_id}_{offset}.json`."""
+    current = set()
+    stale = set()
     prefix = f"{vod_id}_"
     suffix = ".json"
 
@@ -60,11 +67,23 @@ def existing_negative_offsets(output_dir, vod_id):
             continue
         stem = name[len(prefix) : -len(suffix)]
         try:
-            offsets.add(int(stem))
+            offset = int(stem)
         except ValueError:
             continue
+        path = os.path.join(output_dir, name)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                record = json.load(f)
+            destination = (
+                current
+                if has_current_geometry(record, expected_target=offset)
+                else stale
+            )
+        except (OSError, ValueError, json.JSONDecodeError):
+            destination = stale
+        destination.add(offset)
 
-    return offsets
+    return current, stale
 
 
 def is_far_from_clips(candidate_offset, clip_offsets):
@@ -103,15 +122,17 @@ def sample_negative_offsets(vod_duration, clip_offsets, count, exclude_offsets=N
 
 
 def process_negative(task):
-    """Fetch and save one negative window. Returns True if written, False if empty."""
-    streamer_name, vod_id, offset, output_file = task
+    """Fetch and save one negative window. Returns its status."""
+    streamer_name, vod_id, offset, output_file, is_refetch = task
 
-    start_time = max(0, offset - WINDOW_BEFORE_SECONDS)
-    end_time = offset + WINDOW_AFTER_SECONDS
+    start_time, end_time = window_bounds(offset)
 
     messages = fetch_chat_window(vod_id, start_time, end_time)
     if not messages:
-        return False
+        if is_refetch and os.path.exists(output_file):
+            os.replace(output_file, output_file + ".window-v1-stale")
+            return "quarantined"
+        return "empty"
 
     payload = {
         "label": 0,
@@ -120,12 +141,16 @@ def process_negative(task):
         "target_offset": offset,
         "window_start": start_time,
         "window_end": end_time,
+        "window_geometry": WINDOW_GEOMETRY_NAME,
+        "window_geometry_version": WINDOW_GEOMETRY_VERSION,
         "message_count": len(messages),
         "messages": messages,
     }
-    with open(output_file, "w", encoding="utf-8") as f:
+    temporary_output = output_file + ".tmp"
+    with open(temporary_output, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
-    return True
+    os.replace(temporary_output, output_file)
+    return "refetched" if is_refetch else "saved"
 
 
 def main():
@@ -166,35 +191,48 @@ def main():
     for (streamer_name, vod_id), group in grouped:
         clip_offsets = group["vod_offset"].astype(int).tolist()
         target_count = len(clip_offsets) * NEGATIVE_RATIO
-        existing_offsets = existing_negative_offsets(output_dir, vod_id)
+        current_offsets, stale_offsets = existing_negative_offsets(
+            output_dir,
+            vod_id,
+        )
+        existing_offsets = current_offsets | stale_offsets
         need = max(0, target_count - len(existing_offsets))
 
         total_target += target_count
         total_existing += len(existing_offsets)
 
-        if need == 0:
-            continue
+        negative_offsets = []
+        if need > 0:
+            try:
+                vod_duration = fetch_vod_duration(vod_id, headers)
+            except requests.exceptions.RequestException as e:
+                print(f"  -> {streamer_name} VOD {vod_id}: could not fetch duration: {e}")
+                vod_duration = None
 
-        try:
-            vod_duration = fetch_vod_duration(vod_id, headers)
-        except requests.exceptions.RequestException as e:
-            print(f"  -> {streamer_name} VOD {vod_id}: could not fetch duration: {e}")
-            continue
+            if vod_duration:
+                negative_offsets = sample_negative_offsets(
+                    vod_duration=vod_duration,
+                    clip_offsets=clip_offsets,
+                    count=need,
+                    exclude_offsets=existing_offsets,
+                )
+                total_shortfall += need - len(negative_offsets)
+            else:
+                total_shortfall += need
 
-        if not vod_duration:
-            continue
-
-        negative_offsets = sample_negative_offsets(
-            vod_duration=vod_duration,
-            clip_offsets=clip_offsets,
-            count=need,
-            exclude_offsets=existing_offsets,
-        )
-        total_shortfall += need - len(negative_offsets)
+        # Preserve sampled negative anchors across geometry migrations by
+        # refetching stale files in place before adding any shortfall.
+        for offset in sorted(stale_offsets):
+            output_file = os.path.join(output_dir, f"{vod_id}_{offset}.json")
+            tasks.append(
+                (streamer_name, str(vod_id), offset, output_file, True)
+            )
 
         for offset in negative_offsets:
             output_file = os.path.join(output_dir, f"{vod_id}_{offset}.json")
-            tasks.append((streamer_name, str(vod_id), offset, output_file))
+            tasks.append(
+                (streamer_name, str(vod_id), offset, output_file, False)
+            )
 
     print(
         f"Target={total_target} existing={total_existing} "
@@ -208,6 +246,8 @@ def main():
 
     # Phase 2: fetch chat windows concurrently.
     total_written = 0
+    total_refetched = 0
+    total_quarantined = 0
     total_empty = 0
     done = 0
 
@@ -215,8 +255,13 @@ def main():
         futures = {executor.submit(process_negative, task): task for task in tasks}
         for future in as_completed(futures):
             try:
-                if future.result():
+                status = future.result()
+                if status == "saved":
                     total_written += 1
+                elif status == "refetched":
+                    total_refetched += 1
+                elif status == "quarantined":
+                    total_quarantined += 1
                 else:
                     total_empty += 1
             except Exception as e:
@@ -224,10 +269,16 @@ def main():
                 total_empty += 1
             done += 1
             if done % 100 == 0 or done == len(tasks):
-                print(f"[{done}/{len(tasks)}] saved={total_written} empty={total_empty}")
+                print(
+                    f"[{done}/{len(tasks)}] saved={total_written} "
+                    f"refetched={total_refetched} "
+                    f"quarantined={total_quarantined} empty={total_empty}"
+                )
 
     print("\n--- Summary ---")
     print(f"Saved negatives: {total_written}")
+    print(f"Stale geometry refetched: {total_refetched}")
+    print(f"Unavailable stale files quarantined: {total_quarantined}")
     print(f"No messages / Errors: {total_empty}")
     print(f"Already on disk before run: {total_existing}")
     print(f"Per-VOD target total: {total_target}")

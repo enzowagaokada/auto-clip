@@ -13,6 +13,7 @@ remain useful for inspection and backwards-compatible tooling.
 """
 
 import json
+import math
 import os
 
 import numpy as np
@@ -54,6 +55,24 @@ def main():
 
     print(f"Loading {DATASET_FILE}...")
     rows = load_dataset(DATASET_FILE)
+    for index, row in enumerate(rows):
+        try:
+            target = float(row["target_offset"])
+            start = float(row["window_start"])
+            end = float(row["window_end"])
+            geometry_is_current = (
+                row["window_geometry"] == "clip_start_minus_5_plus_30"
+                and int(row["window_geometry_version"]) == 2
+                and math.isclose(target - start, 5.0, abs_tol=1e-6)
+                and math.isclose(end - target, 30.0, abs_tol=1e-6)
+            )
+        except (KeyError, TypeError, ValueError):
+            geometry_is_current = False
+        if not geometry_is_current:
+            raise ValueError(
+                f"dataset row {index} does not use window geometry v2; "
+                "re-run build_dataset.py before encoding"
+            )
     print(f"Loaded {len(rows)} examples.")
 
     # Build vocabulary from the full chat corpus.

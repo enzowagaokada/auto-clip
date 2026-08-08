@@ -45,8 +45,8 @@ def encode_window(messages, vocab, max_seq_len):
     """Encode a window's messages into a fixed-length list of token ids.
 
     Messages are assumed to already be in chronological order. The sequence is
-    truncated/left-padded so the most recent tokens (closest to the clip moment)
-    are always at the end — this matches the GRU using its final hidden state.
+    truncated/left-padded so the latest tokens in the clip-aligned window are
+    always at the end — this matches the GRU using its final hidden state.
     """
     pad_id = vocab[PAD_TOKEN]
     unk_id = vocab[UNK_TOKEN]

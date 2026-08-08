@@ -25,6 +25,8 @@ product and future training loop.
 
 ---
 
+
+
 ## The Core Problem
 
 Given a 30-second window of Twitch chat messages, predict:
@@ -35,6 +37,8 @@ Given a 30-second window of Twitch chat messages, predict:
 This is **binary classification** on **sequential text data**.
 
 ---
+
+
 
 ## Why Sequence-Based (Not Just Counts)
 
@@ -52,22 +56,26 @@ This means it generalizes to new emotes automatically.
 
 ---
 
+
+
 ## Tech Stack
 
 
-| Layer                  | Tool                                           |
-| ---------------------- | ---------------------------------------------- |
-| Language               | Python 3.11+                                   |
-| ML Framework           | JAX                                            |
-| Neural Network Library | Flax (JAX-native, explicit parameter handling) |
-| Optimizer Library      | Optax                                          |
-| Data processing        | Pandas, NumPy                                  |
-| Tokenization           | Simple custom vocab or SentencePiece           |
-| Experiment tracking    | Weights & Biases (wandb) — optional            |
+| Layer                  | Tool                                            |
+| ---------------------- | ----------------------------------------------- |
+| Language               | Python 3.11+                                    |
+| ML Framework           | JAX                                             |
+| Neural Network Library | Flax (JAX-native, explicit parameter handling)  |
+| Optimizer Library      | Optax                                           |
+| Data processing        | Pandas, NumPy                                   |
+| Tokenization           | Simple custom vocab or SentencePiece            |
+| Experiment tracking    | Weights & Biases (wandb) — optional             |
 | Model export           | ONNX (direct via `jax2onnx`) for Go integration |
 
 
 ---
+
+
 
 ## Project Structure
 
@@ -110,6 +118,8 @@ requirements.txt
 
 ---
 
+
+
 ## Project Roadmap / Phases
 
 **Current phase:** Phase 4/5 — Baseline Model and Generalization  
@@ -140,6 +150,8 @@ Next steps:
 into `data/raw/chat_negatives/`.
 - Inspect the resulting JSON counts before building the processed dataset.
 
+
+
 ### Phase 2 — Processed Dataset
 
 Goal: turn raw chat JSON into a labeled ML dataset.
@@ -152,6 +164,8 @@ Implemented:
 - Save processed examples to `data/processed/dataset.jsonl`.
 - Include basic metadata and features such as streamer name, VOD ID, target offset,
 message count, messages per second, unique users, and label.
+
+
 
 ### Phase 3 — Tokenization and Encoding
 
@@ -167,6 +181,8 @@ Implemented:
   - normalized stream time
 - Save encoded arrays under `data/processed/`.
 
+
+
 ### Phase 4 — Baseline Model
 
 Goal: train the first JAX/Flax GRU classifier.
@@ -177,6 +193,8 @@ Implemented:
 - Implement weighted binary cross entropy.
 - Implement the training loop with Optax.
 - Track precision, recall, F1, confusion matrix, and AUC.
+
+
 
 ### Phase 5 — Evaluation and Generalization
 
@@ -189,6 +207,8 @@ Planned:
 - Tune `clip_threshold` per streamer.
 - Add calibration/suggestion mode for new streamers.
 
+
+
 ### Phase 6 — Export and Inference
 
 Goal: make the model usable outside Python.
@@ -200,6 +220,8 @@ Planned:
 - Export the vocabulary file alongside the model.
 - Build `training/inference/predict.py`.
 
+
+
 ### Phase 7 — Go Live Clipper
 
 Goal: use the trained ONNX model in a real-time Go clipper.
@@ -207,10 +229,13 @@ Goal: use the trained ONNX model in a real-time Go clipper.
 Planned:
 
 - Connect to live Twitch chat.
-- Maintain a rolling 35-second buffer and score the target at `now - 5s`.
+- Maintain a rolling 35-second buffer and score the clip-start-equivalent target
+at `now - 30s`.
 - Run ONNX inference every 2-3 seconds.
 - Log deduplicated candidates in shadow mode.
 - Respect cooldown and per-streamer thresholds.
+
+
 
 ### Phase 8 — Product / Business Layer
 
@@ -220,18 +245,22 @@ Planned:
 
 - Add per-streamer clipping-sensitivity calibration.
 - Offer user-facing presets such as **Strict**, **Balanced**, and **Discovery** rather
-  than presenting the raw model score as a probability.
+than presenting the raw model score as a probability.
 - Add an approval queue or Discord alerts so users can review candidate clips.
 - Track expected candidates per stream-hour and accepted-candidate rate for each
-  sensitivity preset.
+sensitivity preset.
 - Feed approvals, rejections, and ambiguous candidates into persistent review data for
-  retraining and optional streamer-specific personalization.
+retraining and optional streamer-specific personalization.
 - Add vertical clip formatting and captions.
 - Add managed streamer/agency workflow.
 
 ---
 
+
+
 ## Data Collection Pipeline
+
+
 
 ### Step 1 — Positive Examples (Viral Moments)
 
@@ -249,9 +278,13 @@ GET https://api.twitch.tv/helix/clips?broadcaster_id={id}&first=100&started_at={
 For each clip, record:
 
 - `clip_id`
-- `vod_offset` — the timestamp in the VOD where the clip starts
+- `vod_offset` — the timestamp where the clip video starts on the VOD; it is
+**not** the time the viewer pressed Clip
 - `vod_id` — which VOD it came from
 - `view_count` — proxy for how viral it was
+- `duration` — clip-video duration, retained as metadata
+
+
 
 #### Tuning clip collection (`config.yaml` → `twitch.clips`)
 
@@ -264,9 +297,9 @@ For each clip, record:
 
 **Symptoms and fixes:**
 
-- `Found 100 clips, kept 3 with VOD data` → window is too wide or clips are too old; **lower `days_back`**
-- `Found 20 clips, kept 20` → streamer had few clips in that window; **raise `days_back`** or `**max_per_streamer**`
-- Script runs fine but dataset feels small → **raise `max_per_streamer`** across more streamers
+- `Found 100 clips, kept 3 with VOD data` → window is too wide or clips are too old; **lower** `days_back`
+- `Found 20 clips, kept 20` → streamer had few clips in that window; **raise** `days_back` or `**max_per_streamer`**
+- Script runs fine but dataset feels small → **raise** `max_per_streamer` across more streamers
 
 Then fetch the chat replay for a window around each clip's `vod_offset`. Because the Helix `/comments` endpoint is deprecated, use the Twitch public GraphQL API (`https://gql.twitch.tv/gql`) with the `VideoCommentsByOffsetOrCursor` query.
 
@@ -289,8 +322,14 @@ query VideoCommentsByOffsetOrCursor($videoID: ID!, $contentOffsetSeconds: Int) {
 }
 ```
 
-Fetch from `offset - 30s` to `offset + 5s` — you want the chat leading up to and
-during the moment, not after.
+Fetch the fixed 35-second range `[vod_offset - 5s, vod_offset + 30s]`. This
+captures five seconds before the clip video starts plus the first 30 seconds of
+the clipped video, where the highlight and chat reaction actually occur.
+
+Clip durations in the collected data range from roughly 5–60 seconds. Duration
+is retained in raw metadata, but it does not change model-window length: a
+variable `[offset - 5s, offset + duration]` range would break the seven fixed
+5-second buckets and could not exactly match one fixed live inference buffer.
 
 Label these windows: **y = 1**
 
@@ -303,11 +342,13 @@ development, both of which `fetch_chat.py` now handles:
   and, if you use it, `cursor: Cursor` (not `String`). Wrong types make *every*
    request fail GraphQL validation, which looks like "no messages" unless you print
    the `errors` array. `fetch_chat.py` now logs GraphQL errors explicitly.
-2. **Integrity check (`IntegrityCheckFailed`):** **cursor-based** pagination trips
+2. **Integrity check (**`IntegrityCheckFailed`**):** **cursor-based** pagination trips
   Twitch's anti-bot challenge (KPSDK/Kasada), which needs a real browser to solve.
    **Offset-based** pagination does not. So `fetch_chat.py` paginates by re-querying
    with the last message's `contentOffsetSeconds` and dedupes overlapping pages by
    message `id` — never using the cursor.
+
+
 
 #### Alternative: `chat-downloader` (pip)
 
@@ -348,6 +389,8 @@ Handle this two ways:
   if you only have 200 positives. Aim for roughly 3:1 or 4:1 negative:positive ratio.
 2. **Weighted loss** at training time — penalize false negatives more (see Loss section).
 
+
+
 ### Scaling Data Collection (Future Work)
 
 Collection is currently slow because it is fully sequential: one clip at a time, one
@@ -381,11 +424,13 @@ proven on the current dataset.
 
 ---
 
+
+
 ## Input Representation
 
 Each training sample is a **sequence of chat messages** plus numeric temporal
-features from a 35-second window (30 seconds before through 5 seconds after the
-target).
+features from a fixed 35-second window spanning five seconds before through 30
+seconds after the clip-start/negative anchor.
 
 ### Tokenization
 
@@ -409,7 +454,7 @@ Any token not in the vocabulary (rare words, typos, or emotes too new/infrequent
 clear `min_freq`) maps to `[UNK]`. This is not just error handling — it has real
 implications for how the model handles emotes that go viral *after* training:
 
-- **The structural signal survives even when an emote is `[UNK]`.** This is precisely
+- **The structural signal survives even when an emote is** `[UNK]`**.** This is precisely
 why a sequence model "generalizes to emotes we are not aware of." When a brand-new
 emote trends and hundreds of users spam it, the model sees `[UNK] [SEP] [UNK] [SEP] [UNK] ...` — but the *shape* (rapid repetition, high message velocity, many unique
 users) is the exact hype pattern the GRU learns. So a new viral emote can still fire
@@ -441,6 +486,8 @@ The bucket features are required for learning acceleration and decay: token orde
 alone contains no message timestamps.
 
 ---
+
+
 
 ## Model Architecture
 
@@ -493,6 +540,8 @@ logits = model.apply(params, dummy_tokens, dummy_features)
 probability = jax.nn.sigmoid(logits)
 ```
 
+
+
 ### Why These Activation Functions
 
 - **ReLU** in hidden layers — introduces non-linearity, lets the model learn complex
@@ -501,6 +550,8 @@ patterns, kills negative values (prevents vanishing gradients better than tanh)
 probability score
 
 ---
+
+
 
 ## Loss Function
 
@@ -523,6 +574,8 @@ Logit-space BCE is numerically stable and avoids clipping saturated
 probabilities.
 
 ---
+
+
 
 ## Training Loop
 
@@ -575,6 +628,8 @@ for epoch in range(EPOCHS):
 
 ---
 
+
+
 ## Evaluation Metrics
 
 Do NOT use accuracy — it's meaningless with class imbalance.
@@ -591,10 +646,10 @@ Use:
 Tune the classification threshold based on the user's clipping sensitivity:
 
 - **Strict / higher threshold** → fewer candidates and less review work, but more
-  potentially good moments are missed.
+potentially good moments are missed.
 - **Balanced / middle threshold** → compromise between candidate quality and coverage.
 - **Discovery / lower threshold** → more candidates and higher recall, but more review
-  work.
+work.
 
 Do not display the raw threshold as a literal confidence percentage unless the model is
 calibrated on representative live-stream data. Prefer user-facing sensitivity presets
@@ -618,6 +673,8 @@ metrics per streamer, because a single global F1 can hide that the model works w
 for one community and poorly for another.
 
 ---
+
+
 
 ## Generalization Across Streamers
 
@@ -653,23 +710,27 @@ specific chat culture.
 
 ---
 
+
+
 ## Hyperparameters to Tune
 
 
-| Parameter        | Starting Value | Notes                                   |
-| ---------------- | -------------- | --------------------------------------- |
+| Parameter        | Starting Value | Notes                                                  |
+| ---------------- | -------------- | ------------------------------------------------------ |
 | `embed_dim`      | 32             | Raise only after learning curves justify more capacity |
 | `hidden_dim`     | 64             | Raise only after learning curves justify more capacity |
-| `learning_rate`  | 1e-3           | Adam default, reduce if unstable        |
-| `dropout`        | 0.3            | Regularization, increase if overfitting |
-| `pos_weight`     | auto           | Training-split negative:positive ratio  |
-| `batch_size`     | 32             | Increase if training is slow            |
-| `window_seconds` | 30             | Chat window size                        |
-| `max_seq_len`    | 512            | Token sequence cap                      |
-| `clip_threshold` | 0.75           | Inference threshold for triggering clip |
+| `learning_rate`  | 1e-3           | Adam default, reduce if unstable                       |
+| `dropout`        | 0.3            | Regularization, increase if overfitting                |
+| `pos_weight`     | auto           | Training-split negative:positive ratio                 |
+| `batch_size`     | 32             | Increase if training is slow                           |
+| `window_seconds` | 35             | Fixed chat window size                                 |
+| `max_seq_len`    | 512            | Token sequence cap                                     |
+| `clip_threshold` | 0.75           | Inference threshold for triggering clip                |
 
 
 ---
+
+
 
 ## Model Export to ONNX (for Go integration)
 
@@ -697,7 +758,11 @@ validation rows in JAX and ONNX Runtime before the bundle is used by Go.
 
 ---
 
+
+
 ## Go Integration (how the classifier plugs into the clipper)
+
+
 
 ### Shared connection, isolated streamer processors
 
@@ -718,54 +783,50 @@ twitch:
       broadcaster_id: "123456789"
       active: true        # set to false to pause without removing
       clip_threshold: 0.82
-      min_unique_users: 30
       cooldown_seconds: 75
-      post_detection_delay_seconds: 25
 
     - name: jasontheween
       broadcaster_id: "987654321"
       active: true
       clip_threshold: 0.78
-      min_unique_users: 40
       cooldown_seconds: 60
-      post_detection_delay_seconds: 25
 
     - name: someotherstreamer
       broadcaster_id: "111222333"
       active: false       # not watching this one right now
       clip_threshold: 0.90
-      min_unique_users: 80
       cooldown_seconds: 120
-      post_detection_delay_seconds: 30
 ```
 
-Only streamers with `active: true` get a goroutine spawned at startup. This lets you
-control exactly who you are watching without touching any Go code.
+Only streamers with `active: true` are subscribed and receive a per-stream
+session. One shared EventSub/event loop owns those isolated buffers, detector
+state, cooldowns, and counters; it does not spawn one connection or inference
+goroutine per streamer.
 
-Per-streamer settings let the same global model adapt to different chat cultures. A
-chaotic chat may need a higher `clip_threshold` and `min_unique_users`, while a quieter
-chat may need a lower threshold so the model does not miss genuinely important moments.
+Per-streamer threshold and cooldown overrides let the same global model adapt to
+different chat cultures.
 
-### Per-streamer inference loop
+### Per-streamer inference state
 
-Each goroutine runs this loop independently:
+On each shared inference tick, every live session:
 
 1. Maintains a rolling 35-second buffer ending at the current notification time
-2. Every 2–3 seconds, scores the target at `now - 5s`
+2. Every 2–3 seconds, scores the clip-start-equivalent target at `now - 30s`
 3. Runs inference via onnxruntime-go
 4. On a below-to-above threshold crossing, writes a shadow candidate and starts
-   the cooldown; the detector must fall below threshold before it can rearm
+  the cooldown; the detector must fall below threshold before it can rearm
 
 The vocabulary file (token → int mapping) gets shipped alongside the ONNX model so
 Go can tokenize identically to how Python tokenized during training.
 
-### Why live inference has a five-second target lag
+### Why live inference has a 30-second target lag
 
-Historical positive windows span from 30 seconds before the clip target through
-5 seconds after it. Live parity therefore requires waiting until `target + 5s`
-and scoring the 35-second range `[target - 30s, target + 5s]`. A plain rolling
-30-second window would drop one trained temporal bucket and change the
-messages-per-second feature.
+Helix `vod_offset` identifies where the clip video starts, not when Clip was
+pressed. Historical positives therefore span
+`[clip start - 5s, clip start + 30s]`. At live time, the same fixed 35-second
+buffer `[now - 35s, now]` scores the clip-start-equivalent target at
+`now - 30s`. This alignment is about covering the clipped video and reaction,
+not an assumption that chat always peaks exactly five seconds after a target.
 
 The first live milestone is shadow-only. A later Clip API sink can add a
 separate post-detection delay after live acceptance is high enough. Twitch's
@@ -774,6 +835,8 @@ to the last 30 seconds by default; the old `has_delay` parameter has been
 removed and must not be used.
 
 ---
+
+
 
 ## Definition of Done
 
@@ -794,6 +857,8 @@ removed and must not be used.
 - [x] Vocabulary file exported alongside ONNX model for Go tokenization
 
 ---
+
+
 
 ## What NOT to Build
 

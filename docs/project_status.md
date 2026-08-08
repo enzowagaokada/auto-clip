@@ -1,6 +1,6 @@
 # Project Status (Living Doc)
 
-**Last updated:** 2026-08-04
+**Last updated:** 2026-08-08
 
 Agents and humans: read this first for current state and next actions.
 Deep methodology lives in `docs/twitch_classifier_brief.md`.
@@ -10,7 +10,7 @@ Training details live in `docs/training_playbook.md`.
 
 ## One-line status
 
-The Go clipper passes export/parity, test, replay, and authenticated live smoke checks. Next: review the first live candidates and measure acceptance quality.
+Window-v2 end-to-end path is live: train, export, parity, replay, and authenticated shadow all passed. Live shadow dual-writes review companions to `candidates_review.jsonl` and `candidates_review.csv` (empty label/reason for human fill). Next: review window-v2 candidates and measure acceptance quality.
 
 ---
 
@@ -27,19 +27,30 @@ The Go clipper passes export/parity, test, replay, and authenticated live smoke 
 
 | Layer | Status |
 |---|---|
-| Data collection pipeline | Done / ongoing |
-| Dataset + temporal features | Done |
-| Train / evaluate / holdout / review loop | Done |
-| Untouched-VOD evaluation | Done (baseline recorded) |
+| Data collection pipeline | Window-v2 refetch completed; unavailable legacy windows quarantined |
+| Dataset + temporal features | Rebuilt: 15,376 examples, 4,800 positive / 10,576 negative |
+| Train / evaluate / holdout / review loop | Window-v2 candidate trained; saved at best validation AP |
+| Untouched-VOD evaluation | Legacy baseline recorded; new untouched evaluation required after retraining |
 | Hard-negative sample weighting | Not built yet |
-| ONNX export | Done; JAX/ONNX and preprocessing fixture parity passed |
-| Go live clipper | Implemented; tests, replay, and authenticated live smoke passed |
-| Shadow-mode acceptance tracking | First session recorded 15 candidates with zero inference errors; human review pending |
+| ONNX export | Window-v2 bundle exported; 3,078-row parity passed with zero mismatches |
+| Go live clipper | Window-v2 unit/race tests, build, replay, and authenticated shadow passed |
+| Shadow-mode acceptance tracking | First window-v2 session recorded; human review pending |
 | Paid product / UI | Later |
 
 ---
 
-## First live shadow smoke
+## Window-v2 live shadow smoke
+
+- Streamer: `jasontheween`
+- Session: about 2m 27s, 386 messages, 45 inferences
+- Candidates: 1 at score `0.5053` / threshold `0.480`
+- Inference errors: 0
+- Logs: `data/live/shadow/window-v2/`
+
+This proves the window-v2 live path works. Candidate quality still needs human
+VOD review; do not mix these records with the legacy five-second-lag smoke.
+
+## Legacy live shadow smoke
 
 - Streamer: `stableronaldo`
 - Session: about 23m 53s, 9,948 messages, 560 inferences
@@ -47,17 +58,34 @@ The Go clipper passes export/parity, test, replay, and authenticated live smoke 
 - Score range: 0.5760–0.8239 at threshold 0.570
 - Inference errors: 0
 
-This proves the live path works; it does not establish candidate quality. Review
-the corresponding VOD moments before changing the threshold.
+This proved the transport/runtime path under the superseded
+`[target - 30s, target + 5s]` geometry. Do not use these candidates as
+window-v2 quality evidence.
 
 ---
 
-## Best current model
+## Window-v2 model candidate
+
+- Run dir: `models/runs/window-v2-vod-seed0`
+- Best epoch: **1** (early-stopped after epoch 4)
+- Saved threshold: **0.480**
+- VOD-grouped validation: precision **0.509**, recall **0.626**, F1 **0.562**
+- Validation AUC: **0.727**
+- Validation AP: **0.545** (positive prevalence ≈ **0.312**)
+
+Training metrics continued improving while validation AP fell after epoch 1,
+showing rapid overfitting. Early stopping correctly restored the epoch-1
+checkpoint.
+
+---
+
+## Previous model (superseded by window-v2 migration)
 
 - Run dir: `models/runs/reviewed-vod-seed0`
 - Trained after StableRonaldo false-positive reviews were imported
 - Saved threshold: **0.570**
 - Artifacts: `chat_classifier_params.msgpack`, `vocab.json`, `inference_meta.json`
+- Status: legacy geometry; do not export or run live after the v2 code change
 
 ### Untouched VOD test (honest generalization)
 
@@ -94,9 +122,13 @@ Random AP baseline ≈ positive prevalence ≈ **0.33**. This is meaningfully be
 7. Export directly with `jax2onnx`; the old `jax2tf -> tf2onnx` route is deprecated.
 8. Export uses explicit saved GRU equations because `jax2onnx` cannot trace the
    current Flax lifted `nn.RNN`; the exporter first asserts exact Flax parity.
-9. Live parity requires `[now - 35s, now]` and scores target `now - 5s`.
+9. Helix `vod_offset` is clip-video start. Historical parity is
+   `[target - 5s, target + 30s]`; live uses `[now - 35s, now]` and scores
+   target `now - 30s`.
 10. The first Go release is hard-gated to **shadow mode** and contains no Create Clip path.
 11. Live chat uses one Twitch EventSub WebSocket and a user token with `user:read:chat`.
+12. Raw windows and model metadata carry geometry version 2; builders/export/live
+    must reject stale geometry instead of mixing contracts.
 
 ---
 
@@ -109,11 +141,13 @@ Random AP baseline ≈ positive prevalence ≈ **0.33**. This is meaningfully be
 | `data/reviews/window_labels.csv` | Durable manual reviews |
 | `data/splits/vods_before_collection.txt` | Baseline VOD snapshot |
 | `data/splits/untouched_vods.txt` | New VODs used for the recorded untouched test |
-| `models/runs/reviewed-vod-seed0/` | Current candidate production model |
+| `models/runs/reviewed-vod-seed0/` | Superseded legacy-geometry model |
 | `models/runs/reviewed-vod-seed0/analysis-untouched_vods/` | Untouched-test outputs |
+| `models/runs/window-v2-vod-seed0/` | Planned window-v2 trained run |
 | `training/export/` | Direct ONNX export and parity tools |
-| `models/exports/reviewed-vod-seed0/` | Generated deployment bundle (after export) |
+| `models/exports/window-v2-vod-seed0/` | Planned window-v2 deployment bundle |
 | `clipper/` | Standalone Go shadow clipper |
+| `data/live/shadow/window-v2/` | Window-v2 candidate/session/review logs (`candidates_review.jsonl` + `.csv`) |
 | `docs/live_clipper.md` | Setup, verification, replay, and live runbook |
 | `docs/training_playbook.md` | How to train / interpret metrics |
 | `docs/twitch_classifier_brief.md` | Full product/ML brief |
@@ -122,10 +156,10 @@ Random AP baseline ≈ positive prevalence ≈ **0.33**. This is meaningfully be
 
 ## Next steps (ordered)
 
-### 1. Build live path (do this next)
+### 1. Complete window-v2 migration (do this next)
 
 - [x] Implement direct ONNX export from the current JAX/Flax model
-- [x] Export `models/exports/reviewed-vod-seed0/`
+- [x] Export legacy `models/exports/reviewed-vod-seed0/`
 - [x] Verify ONNX outputs match JAX logits/sigmoid decisions
 - [x] Verify the Go preprocessing fixture against the Python pipeline
 - [x] Build Go 35s rolling buffer + 5s target lag + inference loop
@@ -134,7 +168,18 @@ Random AP baseline ≈ positive prevalence ≈ **0.33**. This is meaningfully be
 - [x] Run normal Go tests and race-detector tests
 - [x] Run historical replay against representative positive and negative windows
 - [x] Run the first authenticated live shadow-mode smoke test
-- [ ] Review live candidates and track acceptance rate / bad suggestions per hour
+- [x] Correct historical geometry to `[clip start - 5s, clip start + 30s]`
+- [x] Update Go target lag to 30s and add stale-bundle rejection
+- [x] Run window-v2 Python unit tests and Go normal/race tests
+- [x] Refetch all positive and negative raw chat windows
+- [x] Rebuild dataset and inspection encoding
+- [x] Train `models/runs/window-v2-vod-seed0`
+- [x] Analyze the saved window-v2 validation split
+- [x] Export and verify the window-v2 ONNX bundle
+- [x] Verify Python/Go preprocessing parity and build the Go executable
+- [x] Run positive/negative replay against the new bundle
+- [x] Run a new authenticated window-v2 shadow session
+- [ ] Review window-v2 live candidates and track acceptance rate / bad suggestions per hour
 
 ### 2. Improve model in parallel / after shadow data
 

@@ -33,8 +33,8 @@ from data import (
 )
 
 
-DEFAULT_RUN_DIR = Path("models/runs/reviewed-vod-seed0")
-DEFAULT_EXPORT_DIR = Path("models/exports/reviewed-vod-seed0")
+DEFAULT_RUN_DIR = Path("models/runs/window-v2-vod-seed0")
+DEFAULT_EXPORT_DIR = Path("models/exports/window-v2-vod-seed0")
 DEFAULT_DATASET = Path("data/processed/dataset.jsonl")
 DEFAULT_CONFIG = Path("config.yaml")
 

@@ -67,6 +67,10 @@ def validate_run_artifacts(run_dir):
         "feature_names",
         "feature_mean",
         "feature_std",
+        "window_seconds",
+        "target_lag_seconds",
+        "window_geometry",
+        "window_geometry_version",
         "stream_time_scale_seconds",
         "threshold",
         "split",
@@ -101,6 +105,16 @@ def validate_run_artifacts(run_dir):
     if metadata["feature_names"] != FEATURE_NAMES:
         raise ValueError(
             "Saved feature_names do not match training/features/preprocessing.py."
+        )
+    if (
+        int(metadata["window_seconds"]) != 35
+        or int(metadata["target_lag_seconds"]) != 30
+        or metadata["window_geometry"] != "clip_start_minus_5_plus_30"
+        or int(metadata["window_geometry_version"]) != 2
+    ):
+        raise ValueError(
+            "Saved model does not use the required 35-second "
+            "[clip start - 5s, clip start + 30s] window contract."
         )
     return metadata, vocab
 

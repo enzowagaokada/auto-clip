@@ -325,6 +325,16 @@ def main():
     args = parser.parse_args()
 
     metadata = load_json(os.path.join(args.run_dir, "inference_meta.json"))
+    if (
+        int(metadata.get("window_seconds", 0)) != 35
+        or int(metadata.get("target_lag_seconds", 0)) != 30
+        or metadata.get("window_geometry") != "clip_start_minus_5_plus_30"
+        or int(metadata.get("window_geometry_version", 0)) != 2
+    ):
+        raise ValueError(
+            "saved run uses legacy or unknown window geometry; analyze its "
+            "existing saved reports or retrain on the window-v2 dataset"
+        )
     vocab = load_json(os.path.join(args.run_dir, "vocab.json"))
     with open("config.yaml", "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)

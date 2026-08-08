@@ -91,6 +91,10 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("load verified model bundle: %w", err)
 	}
+	if bundle.Metadata.WindowSeconds != cfg.Clipper.WindowSeconds ||
+		bundle.Metadata.TargetLagSeconds != cfg.Clipper.TargetLagSeconds {
+		return errors.New("config window geometry does not match the model bundle")
+	}
 	encoder, err := preprocess.New(bundle)
 	if err != nil {
 		return fmt.Errorf("create encoder: %w", err)
@@ -123,6 +127,8 @@ func run() error {
 			Encoder: encoder, Scorer: engine,
 			Threshold:      cfg.ThresholdFor(config.Streamer{}, bundle.Metadata.Threshold),
 			Cooldown:       time.Duration(cfg.Clipper.CooldownSeconds) * time.Second,
+			Window:         time.Duration(cfg.Clipper.WindowSeconds) * time.Second,
+			TargetLag:      time.Duration(cfg.Clipper.TargetLagSeconds) * time.Second,
 			ManifestSHA256: bundle.ManifestChecksum, Output: os.Stdout,
 		})
 	}
@@ -137,6 +143,8 @@ func run() error {
 	recorder, err := store.Open(
 		cfg.Resolve(cfg.Clipper.CandidatesPath),
 		cfg.Resolve(cfg.Clipper.SessionsPath),
+		cfg.Resolve(cfg.Clipper.CandidatesReviewPath),
+		cfg.Resolve(cfg.Clipper.CandidatesReviewCSVPath),
 	)
 	if err != nil {
 		return err
@@ -264,7 +272,8 @@ func (a *liveApp) reconcileStreams(ctx context.Context, now time.Time) error {
 		session, err := core.NewSession(core.Options{
 			Streamer: streamer.Name, BroadcasterID: broadcasterID,
 			StreamID: stream.ID, StreamStarted: stream.StartedAt, ObservedAt: now,
-			Window: 35 * time.Second, TargetLag: 5 * time.Second,
+			Window:         time.Duration(a.cfg.Clipper.WindowSeconds) * time.Second,
+			TargetLag:      time.Duration(a.cfg.Clipper.TargetLagSeconds) * time.Second,
 			ManifestSHA256: a.bundle.ManifestChecksum,
 		}, a.encoder, a.engine, machine, a.recorder)
 		if err != nil {

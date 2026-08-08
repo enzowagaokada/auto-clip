@@ -8,6 +8,13 @@ import pandas as pd
 import requests
 import yaml
 
+from window_geometry import (
+    WINDOW_GEOMETRY_NAME,
+    WINDOW_GEOMETRY_VERSION,
+    has_current_geometry,
+    window_bounds,
+)
+
 # The standard Twitch Web Client ID used for public GraphQL requests
 TWITCH_GQL_CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko"
 TWITCH_GQL_URL = "https://gql.twitch.tv/gql"
@@ -142,6 +149,13 @@ def fetch_chat_window(vod_id, start_offset_seconds, end_offset_seconds):
                 seen_ids.add(msg_id)
                 new_in_page += 1
 
+                # Twitch may return a page that begins before the requested
+                # content offset. Live inference never includes messages before
+                # its rolling-window boundary, so historical collection must
+                # filter them for parity.
+                if offset < start_offset_seconds:
+                    continue
+
                 # Assemble the message text from fragments
                 msg_fragments = node.get("message", {}).get("fragments", [])
                 full_text = "".join([frag.get("text", "") for frag in msg_fragments]).strip()
@@ -179,34 +193,54 @@ def process_clip(row, chat_dir):
     """Fetch and save one clip's chat window. Returns a status string."""
     clip_id = row["clip_id"]
     vod_id = row["vod_id"]
-    vod_offset = row["vod_offset"]
+    vod_offset = float(row["vod_offset"])
 
     output_file = os.path.join(chat_dir, f"{clip_id}.json")
+    existed = os.path.exists(output_file)
 
-    # Skip if we already downloaded this chat window (resumability)
-    if os.path.exists(output_file):
-        return "skipped"
+    # Skip only records already fetched with the current geometry. This makes
+    # the window migration resumable without silently retaining stale files.
+    if existed:
+        try:
+            with open(output_file, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+            if has_current_geometry(existing, expected_target=vod_offset):
+                return "skipped"
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
 
-    # Target window: 30 seconds before the clip starts, up to 5 seconds into it
-    start_time = max(0, vod_offset - 30)
-    end_time = vod_offset + 5
+    # Helix vod_offset is the start of the clip video, not the time the viewer
+    # pressed Clip. Keep a fixed 35-second model contract while covering five
+    # seconds before that start and the first 30 seconds of clipped video.
+    start_time, end_time = window_bounds(vod_offset)
 
     messages = fetch_chat_window(vod_id, start_time, end_time)
 
     if not messages:
+        if existed:
+            os.replace(output_file, output_file + ".window-v1-stale")
+            return "quarantined"
         return "empty"
 
-    with open(output_file, "w", encoding="utf-8") as f:
+    duration = row.get("duration")
+    clip_duration = None if pd.isna(duration) else float(duration)
+    temporary_output = output_file + ".tmp"
+    with open(temporary_output, "w", encoding="utf-8") as f:
         json.dump({
             "clip_id": clip_id,
             "vod_id": vod_id,
             "target_offset": vod_offset,
+            "clip_start_offset": vod_offset,
+            "clip_duration_seconds": clip_duration,
             "window_start": start_time,
             "window_end": end_time,
+            "window_geometry": WINDOW_GEOMETRY_NAME,
+            "window_geometry_version": WINDOW_GEOMETRY_VERSION,
             "message_count": len(messages),
             "messages": messages,
         }, f, indent=2, ensure_ascii=False)
-    return "fetched"
+    os.replace(temporary_output, output_file)
+    return "refetched" if existed else "fetched"
 
 
 def main():
@@ -225,7 +259,13 @@ def main():
     max_workers = get_max_workers()
     print(f"Found {total_clips} clips. Fetching with {max_workers} workers...")
 
-    counts = {"fetched": 0, "skipped": 0, "empty": 0}
+    counts = {
+        "fetched": 0,
+        "refetched": 0,
+        "quarantined": 0,
+        "skipped": 0,
+        "empty": 0,
+    }
     done = 0
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -245,11 +285,15 @@ def main():
             if done % 50 == 0 or done == total_clips:
                 print(
                     f"[{done}/{total_clips}] fetched={counts['fetched']} "
+                    f"refetched={counts['refetched']} "
+                    f"quarantined={counts['quarantined']} "
                     f"skipped={counts['skipped']} empty={counts['empty']}"
                 )
 
     print("\n--- Summary ---")
     print(f"Successfully fetched: {counts['fetched']}")
+    print(f"Stale geometry refetched: {counts['refetched']}")
+    print(f"Unavailable stale files quarantined: {counts['quarantined']}")
     print(f"Already existed (skipped): {counts['skipped']}")
     print(f"No messages / Errors: {counts['empty']}")
 

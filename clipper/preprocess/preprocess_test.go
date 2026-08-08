@@ -35,7 +35,9 @@ func TestPythonGolden(t *testing.T) {
 			FeatureNames:             modelmeta.FeatureNames,
 			FeatureMean:              make([]float32, 13),
 			FeatureStandardDeviation: []float32{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
-			StreamTimeScaleSeconds:   43200,
+			WindowSeconds:            35, TargetLagSeconds: 30,
+			WindowGeometry: "clip_start_minus_5_plus_30", WindowGeometryVersion: 2,
+			StreamTimeScaleSeconds: 43200,
 		},
 	}
 	encoder, err := New(bundle)
@@ -75,7 +77,9 @@ func TestRecentTokenTruncationPreservesCase(t *testing.T) {
 			VocabSize: 5, MaxSequenceLength: 3, NumberOfFeatures: 13,
 			FeatureNames: modelmeta.FeatureNames, FeatureMean: make([]float32, 13),
 			FeatureStandardDeviation: []float32{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
-			StreamTimeScaleSeconds:   1,
+			WindowSeconds:            35, TargetLagSeconds: 30,
+			WindowGeometry: "clip_start_minus_5_plus_30", WindowGeometryVersion: 2,
+			StreamTimeScaleSeconds: 1,
 		},
 	}
 	encoder, _ := New(bundle)

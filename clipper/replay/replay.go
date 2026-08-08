@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -69,6 +70,8 @@ type Options struct {
 	Scorer         core.Scorer
 	Threshold      float32
 	Cooldown       time.Duration
+	Window         time.Duration
+	TargetLag      time.Duration
 	ManifestSHA256 string
 	Output         io.Writer
 }
@@ -84,6 +87,9 @@ func Run(paths []string, options Options) error {
 	}
 	if options.Encoder == nil || options.Scorer == nil || options.Output == nil {
 		return errors.New("replay encoder, scorer, and output are required")
+	}
+	if options.Window != 35*time.Second || options.TargetLag != 30*time.Second {
+		return errors.New("replay requires a 35-second window and 30-second target lag")
 	}
 	encoder := json.NewEncoder(options.Output)
 	encoder.SetEscapeHTML(false)
@@ -108,10 +114,8 @@ func runFile(path string, options Options) (Result, error) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return Result{}, fmt.Errorf("decode replay %s: %w", path, err)
 	}
-	if raw.WindowEnd-raw.WindowStart != 35 ||
-		raw.WindowEnd-raw.TargetOffset != 5 ||
-		raw.TargetOffset-raw.WindowStart != 30 {
-		return Result{}, fmt.Errorf("%s does not contain the immutable [target-30s, target+5s] window", path)
+	if !hasExpectedGeometry(raw, options.Window, options.TargetLag) {
+		return Result{}, fmt.Errorf("%s does not contain the immutable [clip start-5s, clip start+30s] window", path)
 	}
 
 	base := time.Unix(0, 0).UTC()
@@ -127,7 +131,7 @@ func runFile(path string, options Options) (Result, error) {
 	session, err := core.NewSession(core.Options{
 		Streamer: streamer, StreamID: vodID, StreamStarted: base,
 		ObservedAt: base.Add(time.Duration(raw.WindowStart * float64(time.Second))),
-		Window:     35 * time.Second, TargetLag: 5 * time.Second,
+		Window:     options.Window, TargetLag: options.TargetLag,
 		ManifestSHA256: options.ManifestSHA256,
 	}, options.Encoder, options.Scorer, machine, discardRecorder{})
 	if err != nil {
@@ -152,4 +156,14 @@ func runFile(path string, options Options) (Result, error) {
 		TargetOffset: raw.TargetOffset, Score: evaluation.Score,
 		Threshold: evaluation.Threshold, Candidate: evaluation.Triggered,
 	}, nil
+}
+
+func nearlyEqual(left, right float64) bool {
+	return math.Abs(left-right) <= 1e-6
+}
+
+func hasExpectedGeometry(raw RawWindow, window, targetLag time.Duration) bool {
+	return nearlyEqual(raw.WindowEnd-raw.WindowStart, window.Seconds()) &&
+		nearlyEqual(raw.WindowEnd-raw.TargetOffset, targetLag.Seconds()) &&
+		nearlyEqual(raw.TargetOffset-raw.WindowStart, 5)
 }

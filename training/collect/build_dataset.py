@@ -4,6 +4,12 @@ import os
 
 import pandas as pd
 
+from window_geometry import (
+    WINDOW_GEOMETRY_NAME,
+    WINDOW_GEOMETRY_VERSION,
+    has_current_geometry,
+)
+
 
 CLIPS_FILE = "data/raw/clips.csv"
 POSITIVE_DIR = "data/raw/chat"
@@ -127,6 +133,8 @@ def build_example(record, label, streamer_name):
         "repeat_message_ratio": features["repeat_message_ratio"],
         "window_start": features["window_start"],
         "window_end": features["window_end"],
+        "window_geometry": WINDOW_GEOMETRY_NAME,
+        "window_geometry_version": WINDOW_GEOMETRY_VERSION,
         "messages": [m.get("message", "") for m in record.get("messages", [])],
     }
 
@@ -137,6 +145,14 @@ def iter_json_files(directory):
     for name in sorted(os.listdir(directory)):
         if name.endswith(".json"):
             yield os.path.join(directory, name)
+
+
+def require_current_geometry(record, path):
+    if not has_current_geometry(record):
+        raise ValueError(
+            f"{path} uses stale or invalid window geometry. "
+            "Re-run fetch_chat.py and fetch_negatives.py before rebuilding."
+        )
 
 
 def main():
@@ -158,6 +174,7 @@ def main():
         with open(path, "r", encoding="utf-8") as f:
             record = json.load(f)
 
+        require_current_geometry(record, path)
         if not record.get("messages"):
             skipped_empty += 1
             continue
@@ -178,6 +195,7 @@ def main():
         with open(path, "r", encoding="utf-8") as f:
             record = json.load(f)
 
+        require_current_geometry(record, path)
         if not record.get("messages"):
             skipped_empty += 1
             continue

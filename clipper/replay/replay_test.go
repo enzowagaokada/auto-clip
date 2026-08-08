@@ -3,6 +3,7 @@ package replay
 import (
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 func TestRawWindowVODIDAcceptsStringAndNumber(t *testing.T) {
@@ -32,5 +33,25 @@ func TestRawWindowVODIDRejectsInvalidType(t *testing.T) {
 	var window RawWindow
 	if err := json.Unmarshal([]byte(`{"vod_id":true}`), &window); err == nil {
 		t.Fatal("expected invalid VOD ID type to fail")
+	}
+}
+
+func TestExpectedGeometryUsesClipStartMinusFivePlusThirty(t *testing.T) {
+	current := RawWindow{
+		TargetOffset: 100,
+		WindowStart:  95,
+		WindowEnd:    130,
+	}
+	if !hasExpectedGeometry(current, 35*time.Second, 30*time.Second) {
+		t.Fatal("current geometry was rejected")
+	}
+
+	old := RawWindow{
+		TargetOffset: 100,
+		WindowStart:  70,
+		WindowEnd:    105,
+	}
+	if hasExpectedGeometry(old, 35*time.Second, 30*time.Second) {
+		t.Fatal("old geometry was accepted")
 	}
 }

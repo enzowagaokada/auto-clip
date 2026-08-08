@@ -41,12 +41,14 @@ type Clipper struct {
 	InferenceMillis   int      `yaml:"inference_millis"`
 	StreamPollSeconds int      `yaml:"stream_poll_seconds"`
 	ChatBufferSize    int      `yaml:"chat_buffer_size"`
-	CandidatesPath    string   `yaml:"candidates_path"`
-	SessionsPath      string   `yaml:"sessions_path"`
-	TokensInputName   string   `yaml:"tokens_input_name"`
-	FeaturesInputName string   `yaml:"features_input_name"`
-	OutputName        string   `yaml:"output_name"`
-	OutputIsLogit     bool     `yaml:"output_is_logit"`
+	CandidatesPath          string `yaml:"candidates_path"`
+	SessionsPath            string `yaml:"sessions_path"`
+	CandidatesReviewPath    string `yaml:"candidates_review_path"`
+	CandidatesReviewCSVPath string `yaml:"candidates_review_csv_path"`
+	TokensInputName         string `yaml:"tokens_input_name"`
+	FeaturesInputName    string `yaml:"features_input_name"`
+	OutputName           string `yaml:"output_name"`
+	OutputIsLogit        bool   `yaml:"output_is_logit"`
 }
 
 func Defaults(repoRoot string) Config {
@@ -54,20 +56,22 @@ func Defaults(repoRoot string) Config {
 		RepoRoot: repoRoot,
 		Clipper: Clipper{
 			Mode:              "shadow",
-			BundleDir:         "models/exports/reviewed-vod-seed0",
+			BundleDir:         "models/exports/window-v2-vod-seed0",
 			RuntimeDLLPath:    "clipper/runtime/onnxruntime.dll",
 			CooldownSeconds:   75,
 			WindowSeconds:     35,
-			TargetLagSeconds:  5,
+			TargetLagSeconds:  30,
 			InferenceMillis:   2500,
 			StreamPollSeconds: 30,
 			ChatBufferSize:    4096,
-			CandidatesPath:    "data/live/shadow/candidates.jsonl",
-			SessionsPath:      "data/live/shadow/sessions.jsonl",
-			TokensInputName:   "tokens",
-			FeaturesInputName: "features",
-			OutputName:        "logits",
-			OutputIsLogit:     true,
+			CandidatesPath:          "data/live/shadow/window-v2/candidates.jsonl",
+			SessionsPath:            "data/live/shadow/window-v2/sessions.jsonl",
+			CandidatesReviewPath:    "data/live/shadow/window-v2/candidates_review.jsonl",
+			CandidatesReviewCSVPath: "data/live/shadow/window-v2/candidates_review.csv",
+			TokensInputName:         "tokens",
+			FeaturesInputName:       "features",
+			OutputName:              "logits",
+			OutputIsLogit:           true,
 		},
 	}
 }
@@ -103,6 +107,10 @@ func (c Config) Validate() error {
 	if c.Clipper.RuntimeDLLPath == "" {
 		return errors.New("clipper.runtime_dll_path is required")
 	}
+	if c.Clipper.CandidatesPath == "" || c.Clipper.SessionsPath == "" ||
+		c.Clipper.CandidatesReviewPath == "" || c.Clipper.CandidatesReviewCSVPath == "" {
+		return errors.New("clipper candidates, sessions, and candidates_review paths are required")
+	}
 	if c.Clipper.TokensInputName == "" || c.Clipper.FeaturesInputName == "" || c.Clipper.OutputName == "" {
 		return errors.New("ONNX input and output names are required")
 	}
@@ -115,8 +123,8 @@ func (c Config) Validate() error {
 	if c.Clipper.WindowSeconds != 35 {
 		return errors.New("clipper.window_seconds is immutable and must be 35")
 	}
-	if c.Clipper.TargetLagSeconds != 5 {
-		return errors.New("clipper.target_lag_seconds is immutable and must be 5")
+	if c.Clipper.TargetLagSeconds != 30 {
+		return errors.New("clipper.target_lag_seconds is immutable and must be 30")
 	}
 	if c.Clipper.CooldownSeconds < 0 || c.Clipper.InferenceMillis <= 0 ||
 		c.Clipper.StreamPollSeconds <= 0 || c.Clipper.ChatBufferSize <= 0 {

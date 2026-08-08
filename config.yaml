@@ -21,32 +21,37 @@ twitch:
       active: true
     - name: "jasontheween"
       broadcaster_id: "107117952"
-      active: false
+      active: true
     - name: "adapt"
       broadcaster_id: "211234859"
-      active: false
+      active: true
     - name: "lacy"
       broadcaster_id: "494543675"
-      active: false
+      active: true
     - name: "marlon"
       broadcaster_id: "1019733647"
-      active: false
+      active: true
+    - name: "arky"
+      broadcaster_id: "100869214"
+      active: true
 
 # Standalone Go shadow clipper. clip_threshold is intentionally omitted here,
 # so inference_meta.json supplies the model's saved threshold. It may be set
 # globally here or overridden per twitch.streamers entry.
 clipper:
   mode: "shadow"
-  bundle_dir: "models/exports/reviewed-vod-seed0"
+  bundle_dir: "models/exports/window-v2-vod-seed0"
   runtime_dll_path: "clipper/runtime/onnxruntime.dll"
   cooldown_seconds: 75
   window_seconds: 35
-  target_lag_seconds: 5
+  target_lag_seconds: 30
   inference_millis: 2500
   stream_poll_seconds: 30
   chat_buffer_size: 4096
-  candidates_path: "data/live/shadow/candidates.jsonl"
-  sessions_path: "data/live/shadow/sessions.jsonl"
+  candidates_path: "data/live/shadow/window-v2/candidates.jsonl"
+  sessions_path: "data/live/shadow/window-v2/sessions.jsonl"
+  candidates_review_path: "data/live/shadow/window-v2/candidates_review.jsonl"
+  candidates_review_csv_path: "data/live/shadow/window-v2/candidates_review.csv"
   tokens_input_name: "tokens"
   features_input_name: "features"
   output_name: "logits"
@@ -68,7 +73,10 @@ training:
   epochs: 20
   # "auto" calculates negatives / positives from the training split only.
   pos_weight: "auto"
-  window_seconds: 30
+  # Must match the clipper and the fixed [clip start - 5s, clip start + 30s]
+  # historical collection geometry.
+  window_seconds: 35
+  target_lag_seconds: 30
   validation_fraction: 0.2
   early_stopping_patience: 3
   early_stopping_min_delta: 0.0001
