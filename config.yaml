@@ -34,6 +34,9 @@ twitch:
     - name: "arky"
       broadcaster_id: "100869214"
       active: true
+    - name: "jynxzi"
+      broadcaster_id: "411377640"
+      active: true
 
 # Standalone Go shadow clipper. clip_threshold is intentionally omitted here,
 # so inference_meta.json supplies the model's saved threshold. It may be set

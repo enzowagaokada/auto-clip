@@ -30,8 +30,9 @@ Live mode loads `.env` and requires `TWITCH_CLIENT_ID` plus a
 identity, uses one shared EventSub socket, and writes append-only candidate,
 candidate-review, and session records. Full candidate records contain the
 model manifest checksum, raw/scaled features, and source chat; companions
-`candidates_review.jsonl` and `candidates_review.csv` keep id, streamer, score,
-and seek stamp (CSV also has empty `review_label`/`reason` for human notes).
+`candidates_review.jsonl` and `candidates_review.csv` keep id, session_id,
+streamer, score, and seek stamp (CSV also has empty `review_label`/`reason`).
+Join `session_id` to `sessions.jsonl` for optional `vod_id`.
 The window-v2 logs live under `data/live/shadow/window-v2/`; legacy-geometry
 logs remain in their original parent directory for comparison.
 

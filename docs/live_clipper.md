@@ -186,12 +186,12 @@ Generated records:
 - `data/live/shadow/window-v2/candidates.jsonl` — full candidate windows,
   scores, messages, exact features, and model manifest checksum;
 - `data/live/shadow/window-v2/candidates_review.jsonl` — scrollable companion
-  written automatically on each candidate (`candidate_id`, `streamer`, `score`,
-  `stream_offset_stamp`);
+  written automatically on each candidate (`candidate_id`, `session_id`,
+  `streamer`, `score`, `stream_offset_stamp`);
 - `data/live/shadow/window-v2/candidates_review.csv` — same companion fields plus
   empty `review_label` / `reason` columns for human notes;
 - `data/live/shadow/window-v2/sessions.jsonl` — immutable per-stream counters
-  and durations, sufficient to calculate candidates per stream-hour.
+  and durations, plus optional `vod_id` once known; join reviews via `session_id`.
 
 Window-v2 uses a separate directory so its acceptance metrics cannot be
 accidentally mixed with the legacy five-second-lag shadow session.
@@ -206,31 +206,28 @@ Keep the full append-only `candidates.jsonl` for features and chat. While the
 clipper runs, each candidate also appends one companion line to
 `data/live/shadow/window-v2/candidates_review.jsonl` and
 `data/live/shadow/window-v2/candidates_review.csv` with
-`candidate_id`, `streamer`, `score`, and `stream_offset_stamp` (for example
-`1h1m4s`). The CSV also has empty `review_label` and `reason` columns — fill
-those after watching the VOD (`positive` / `hard_negative` / `uncertain`, plus
-a short reason). Do not edit the append-only JSONL logs to store decisions.
-If you edit the CSV in Excel while the clipper is running, close the file
-before the next candidate write or Excel may lock the append.
+`candidate_id`, `session_id`, `streamer`, `score`, and `stream_offset_stamp`
+(for example `1h1m4s`). The CSV also has empty `review_label` and `reason`
+columns — fill those after watching the VOD (`positive` / `hard_negative` /
+`uncertain`, plus a short reason). Do not edit the append-only JSONL candidate
+logs to store decisions. If you edit the CSV in Excel while the clipper is
+running, close the file before the next candidate write or Excel may lock the
+append.
 
-Copy the stamp into Twitch's seek box or a URL of the form
-`https://www.twitch.tv/videos/VOD_ID?t=1h1m4s`.
+Join `session_id` → `sessions.jsonl`. When that session has `vod_id`, open:
+
+`https://www.twitch.tv/videos/{vod_id}?t={stream_offset_stamp}`
 
 Under window v2, the stamp is the clip-start-equivalent moment 30 seconds
-before `detected_at`. To find the VOD:
+before `detected_at`. Start roughly five seconds earlier to inspect the full
+scored window. Judge the video moment, not only chat or score.
 
-1. Query the broadcaster's recent archives with the configured Twitch CLI:
+If `vod_id` is missing, resolve once from Helix archives by matching the
+session `stream_id` (Twitch CLI example):
 
-   ```powershell
-   twitch api get /videos -q user_id=107117952 -q type=archive -q first=20
-   ```
+```powershell
+twitch api get /videos -q user_id=100869214 -q type=archive -q first=20
+```
 
-2. Find the returned video whose `stream_id` matches the candidate/session
-   `stream_id`. Its `id` is the VOD ID.
-3. Seek to `stream_offset_stamp`, starting roughly five seconds earlier to
-   inspect the complete scored window.
-4. Judge the actual video moment, not only the chat messages or score.
-
-The logged `stream_id` identifies the broadcast but differs from the archive
-VOD `id`. If an archive is not returned yet, wait for Twitch to finish
-processing it and retry.
+Automatic resolve-on-session-close / review-time refresh is deferred; see
+`docs/project_status.md`.

@@ -29,7 +29,9 @@ func TestJSONLAppendsWithoutReplacingPriorRecords(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := writer.AppendSession(SessionCounters{SessionID: "s", Streamer: "example"}); err != nil {
+	if err := writer.AppendSession(SessionCounters{
+		SessionID: "s", Streamer: "example", VODID: "2840052504",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.Close(); err != nil {
@@ -53,9 +55,21 @@ func TestJSONLAppendsWithoutReplacingPriorRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	if review != (CandidateReview{
-		CandidateID: "c", Streamer: "example", Score: 0.5053, StreamOffsetStamp: "1h1m4s",
+		CandidateID: "c", SessionID: "s", Streamer: "example", Score: 0.5053, StreamOffsetStamp: "1h1m4s",
 	}) {
 		t.Fatalf("review = %#v", review)
+	}
+
+	sessionData, err := os.ReadFile(sessions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var session SessionCounters
+	if err := json.Unmarshal(sessionData, &session); err != nil {
+		t.Fatal(err)
+	}
+	if session.VODID != "2840052504" {
+		t.Fatalf("session vod_id = %q", session.VODID)
 	}
 
 	csvFile, err := os.Open(reviewCSV)
@@ -71,15 +85,15 @@ func TestJSONLAppendsWithoutReplacingPriorRecords(t *testing.T) {
 		t.Fatalf("review CSV rows = %d, want 2", len(rows))
 	}
 	wantHeader := []string{
-		"candidate_id", "streamer", "score", "stream_offset_stamp", "review_label", "reason",
+		"candidate_id", "session_id", "streamer", "score", "stream_offset_stamp", "review_label", "reason",
 	}
 	if strings.Join(rows[0], ",") != strings.Join(wantHeader, ",") {
 		t.Fatalf("review CSV header = %v, want %v", rows[0], wantHeader)
 	}
-	if rows[1][0] != "c" || rows[1][1] != "example" || rows[1][3] != "1h1m4s" {
+	if rows[1][0] != "c" || rows[1][1] != "s" || rows[1][2] != "example" || rows[1][4] != "1h1m4s" {
 		t.Fatalf("review CSV row = %v", rows[1])
 	}
-	if rows[1][4] != "" || rows[1][5] != "" {
+	if rows[1][5] != "" || rows[1][6] != "" {
 		t.Fatalf("review_label/reason should be empty for machine writes, got %v", rows[1])
 	}
 }
@@ -90,8 +104,8 @@ func TestReviewCSVPreservesExistingRows(t *testing.T) {
 	sessions := filepath.Join(directory, "sessions.jsonl")
 	reviews := filepath.Join(directory, "candidates_review.jsonl")
 	reviewCSV := filepath.Join(directory, "candidates_review.csv")
-	existing := "candidate_id,streamer,score,stream_offset_stamp,review_label,reason\n" +
-		"old,arky,0.5,1h0m0s,hard_negative,stream start\n"
+	existing := "candidate_id,session_id,streamer,score,stream_offset_stamp,review_label,reason\n" +
+		"old,sess1,arky,0.5,1h0m0s,hard_negative,stream start\n"
 	if err := os.WriteFile(reviewCSV, []byte(existing), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +114,7 @@ func TestReviewCSVPreservesExistingRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := writer.AppendCandidate(Candidate{
-		CandidateID: "new", Streamer: "marlon", StreamOffsetSecond: 44, Score: 0.4932,
+		CandidateID: "new", SessionID: "sess2", Streamer: "marlon", StreamOffsetSecond: 44, Score: 0.4932,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -119,10 +133,10 @@ func TestReviewCSVPreservesExistingRows(t *testing.T) {
 	if len(rows) != 3 {
 		t.Fatalf("review CSV rows = %d, want 3", len(rows))
 	}
-	if rows[1][0] != "old" || rows[1][4] != "hard_negative" {
+	if rows[1][0] != "old" || rows[1][1] != "sess1" || rows[1][5] != "hard_negative" {
 		t.Fatalf("existing reviewed row changed: %v", rows[1])
 	}
-	if rows[2][0] != "new" || rows[2][1] != "marlon" {
+	if rows[2][0] != "new" || rows[2][1] != "sess2" || rows[2][2] != "marlon" {
 		t.Fatalf("appended row = %v", rows[2])
 	}
 }

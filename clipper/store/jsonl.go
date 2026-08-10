@@ -32,8 +32,10 @@ type Candidate struct {
 
 // CandidateReview is the scrollable companion log written beside the full
 // candidate JSONL. It intentionally omits chat, features, and checksums.
+// SessionID joins to sessions.jsonl (where vod_id is stored once resolved).
 type CandidateReview struct {
 	CandidateID       string  `json:"candidate_id"`
+	SessionID         string  `json:"session_id"`
 	Streamer          string  `json:"streamer"`
 	Score             float32 `json:"score"`
 	StreamOffsetStamp string  `json:"stream_offset_stamp"`
@@ -50,6 +52,7 @@ type SessionCounters struct {
 	Streamer        string    `json:"streamer"`
 	BroadcasterID   string    `json:"broadcaster_id,omitempty"`
 	StreamID        string    `json:"stream_id,omitempty"`
+	VODID           string    `json:"vod_id,omitempty"`
 	StreamStartedAt time.Time `json:"stream_started_at"`
 	StartedAt       time.Time `json:"started_at"`
 	EndedAt         time.Time `json:"ended_at"`
@@ -61,6 +64,7 @@ type SessionCounters struct {
 
 var reviewCSVHeader = []string{
 	"candidate_id",
+	"session_id",
 	"streamer",
 	"score",
 	"stream_offset_stamp",
@@ -158,6 +162,7 @@ func (s *JSONL) AppendCandidate(candidate Candidate) error {
 	}
 	review := CandidateReview{
 		CandidateID:       candidate.CandidateID,
+		SessionID:         candidate.SessionID,
 		Streamer:          candidate.Streamer,
 		Score:             candidate.Score,
 		StreamOffsetStamp: StreamOffsetStamp(candidate.StreamOffsetSecond),
@@ -192,6 +197,7 @@ func appendReviewCSV(file *os.File, review CandidateReview) error {
 	writer := csv.NewWriter(file)
 	if err := writer.Write([]string{
 		review.CandidateID,
+		review.SessionID,
 		review.Streamer,
 		fmt.Sprintf("%.8g", review.Score),
 		review.StreamOffsetStamp,

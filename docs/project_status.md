@@ -10,7 +10,7 @@ Training details live in `docs/training_playbook.md`.
 
 ## One-line status
 
-Window-v2 end-to-end path is live: train, export, parity, replay, and authenticated shadow all passed. Live shadow dual-writes review companions to `candidates_review.jsonl` and `candidates_review.csv` (empty label/reason for human fill). Next: review window-v2 candidates and measure acceptance quality.
+Window-v2 end-to-end path is live: train, export, parity, replay, and authenticated shadow all passed. Review companions include `session_id`; sessions can carry `vod_id` for VOD links. Next: review window-v2 candidates and measure acceptance quality.
 
 ---
 
@@ -188,13 +188,25 @@ Random AP baseline ≈ positive prevalence ≈ **0.33**. This is meaningfully be
 - [ ] Retrain only after new labels or live feedback exist
 - [ ] Collect a **new** untouched VOD set after the next retrain cycle
 
-### 3. Productization later
+### 3. Shadow review linking (partial now / auto later)
+
+- [x] Put `session_id` on `candidates_review.jsonl` / `.csv` so rows join to `sessions.jsonl`
+- [x] Add optional `vod_id` on session records; backfill existing Arky/Marlon/Jason sessions
+- [ ] Later: on session close, poll Helix archives until `stream_id` matches and persist `vod_id` (retry/backoff; archives often appear minutes–hours after offline)
+- [ ] Later: optional review-time refresh for still-pending `vod_id`s; paginate beyond `first=20` for backfill of old sessions
+- [ ] Later: surface ready Twitch URLs in the review CSV (`https://www.twitch.tv/videos/{vod_id}?t={stamp}`)
+
+### 4. Productization later
 
 - [ ] Strict / Balanced / Discovery sensitivity presets
 - [ ] Approval queue UI or Discord alerts
 - [ ] Per-streamer calibration from acceptance rates
 - [ ] Outside-community streamers for broader generalization
 - [ ] Fully automatic clipping only after live acceptance is high enough
+- [ ] Ensure broadcast ids can automatically be inserted without the user needing to search it
+      up themselves
+- [ ] Figure out how to make persistent tokens for the user without needed them to login/
+      get another user token consistently.
 
 ---
 
