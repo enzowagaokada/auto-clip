@@ -91,19 +91,37 @@ streamer/VOD/offset as the stable identity. It also repairs the common
 `unertain` typo and can recover mildly malformed review rows by matching them to
 the source `false_positives.jsonl`.
 
-Then rebuild and retrain:
+Live shadow reviews use a different CSV and are **not** in the historical
+dataset. Import them before rebuilding so the labeled windows become training
+examples:
+
+```powershell
+python training/collect/import_live_reviews.py
+```
+
+That command reads `data/live/shadow/window-v2/candidates_review.csv`, joins
+`session_id` to `sessions.jsonl` for `vod_id`, skips unlabeled rows and labeled
+rows with no VOD, merges into the same `window_labels.csv`, and writes
+geometry-v2 windows to `data/raw/chat_live/`. The live typo `negative` is stored
+as `hard_negative`. Uncertain windows are written so a later relabel does not
+require re-parsing live logs; `build_dataset.py` still excludes them.
+
+Then rebuild and retrain. Do **not** overwrite `models/runs/window-v2-vod-seed0`
+after importing live reviews:
 
 ```powershell
 python training/collect/build_dataset.py
 python training/features/encode.py
-python training/model/train.py --output-dir models/runs/window-v2-vod-seed0
+python training/model/train.py --output-dir models/runs/window-v2-live-hn-seed0
 ```
 
 Reviewed positives override the original negative label, reviewed hard
 negatives remain explicit negatives, and reviewed uncertain windows are
-excluded. Once reviews are incorporated into training, evaluate the resulting
-model on new untouched VODs; the reviewed windows are no longer an unbiased
-test set.
+excluded. Training applies `hard_negative_weight` (default 3.0) only to
+reviewed `hard_negative` rows in the training loss; validation metrics stay
+unweighted. Once reviews are incorporated into training, evaluate the resulting
+model on new untouched VODs; the reviewed windows — including live VODs that
+were imported — are no longer an unbiased test set.
 
 The analyzer preserves an existing `false_positive_review.csv` by default. Pass
 `--overwrite-review` only when intentionally discarding completed review work.

@@ -37,6 +37,9 @@ twitch:
     - name: "jynxzi"
       broadcaster_id: "411377640"
       active: true
+    - name: "plaqueboymax"
+      broadcaster_id: "672238954"
+      active: true
 
 # Standalone Go shadow clipper. clip_threshold is intentionally omitted here,
 # so inference_meta.json supplies the model's saved threshold. It may be set
@@ -76,6 +79,8 @@ training:
   epochs: 20
   # "auto" calculates negatives / positives from the training split only.
   pos_weight: "auto"
+  # Extra multiplier on reviewed hard_negative rows during training (1.0 disables).
+  hard_negative_weight: 3.0
   # Must match the clipper and the fixed [clip start - 5s, clip start + 30s]
   # historical collection geometry.
   window_seconds: 35

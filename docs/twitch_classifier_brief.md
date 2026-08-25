@@ -565,12 +565,15 @@ def weighted_bce_loss(params, model, x_tokens, x_features, y, key):
         rngs={"dropout": key}
     )
     loss = optax.sigmoid_binary_cross_entropy(logits, y)
-    weights = 1.0 + y * (pos_weight - 1.0)
+    class_weights = 1.0 + y * (pos_weight - 1.0)
+    weights = class_weights * sample_weight
     return jnp.mean(loss * weights)
 ```
 
 Calculate `pos_weight` as negative/positive count from the training split only.
-Logit-space BCE is numerically stable and avoids clipping saturated
+`sample_weight` is `hard_negative_weight` (default 3.0) on reviewed
+`hard_negative` rows and 1.0 otherwise; it is applied only in the training
+step. Logit-space BCE is numerically stable and avoids clipping saturated
 probabilities.
 
 ---
@@ -722,6 +725,7 @@ specific chat culture.
 | `learning_rate`  | 1e-3           | Adam default, reduce if unstable                       |
 | `dropout`        | 0.3            | Regularization, increase if overfitting                |
 | `pos_weight`     | auto           | Training-split negative:positive ratio                 |
+| `hard_negative_weight` | 3.0      | Extra train-loss multiplier on reviewed hard negatives |
 | `batch_size`     | 32             | Increase if training is slow                           |
 | `window_seconds` | 35             | Fixed chat window size                                 |
 | `max_seq_len`    | 512            | Token sequence cap                                     |

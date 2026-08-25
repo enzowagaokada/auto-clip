@@ -231,3 +231,16 @@ twitch api get /videos -q user_id=100869214 -q type=archive -q first=20
 
 Automatic resolve-on-session-close / review-time refresh is deferred; see
 `docs/project_status.md`.
+
+After labels are filled, import them into training (does not edit the append-only
+JSONL logs):
+
+```powershell
+python training/collect/import_live_reviews.py
+python training/collect/build_dataset.py
+python training/features/encode.py
+python training/model/train.py --output-dir models/runs/window-v2-live-hn-seed0
+```
+
+Rows without `vod_id` are skipped. Live VODs that enter training must not be
+reused as an untouched test. See `docs/training_playbook.md`.

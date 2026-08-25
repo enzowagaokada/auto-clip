@@ -191,8 +191,17 @@ def prepare_dataset_from_saved_preprocessing(
     return tokens, features, labels
 
 
-def iterate_batches(tokens, features, labels, indices, batch_size, rng=None, shuffle=True):
-    """Yield (tokens, features, labels) minibatches for the given indices."""
+def iterate_batches(
+    tokens,
+    features,
+    labels,
+    indices,
+    batch_size,
+    rng=None,
+    shuffle=True,
+    sample_weights=None,
+):
+    """Yield (tokens, features, labels[, sample_weights]) minibatches."""
     indices = np.array(indices)
     if shuffle:
         rng = rng or np.random.default_rng(0)
@@ -200,8 +209,11 @@ def iterate_batches(tokens, features, labels, indices, batch_size, rng=None, shu
 
     for start in range(0, len(indices), batch_size):
         batch_idx = indices[start:start + batch_size]
-        yield (
+        batch = (
             tokens[batch_idx],
             features[batch_idx],
             labels[batch_idx].astype(np.float32),
         )
+        if sample_weights is not None:
+            batch = batch + (sample_weights[batch_idx].astype(np.float32),)
+        yield batch

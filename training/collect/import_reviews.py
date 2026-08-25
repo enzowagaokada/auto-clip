@@ -29,8 +29,14 @@ LABEL_ALIASES = {
     "positive": "positive",
     "hard_negative": "hard_negative",
     "hardnegative": "hard_negative",
+    "negative": "hard_negative",
     "uncertain": "uncertain",
     "unertain": "uncertain",
+}
+TRAINING_LABELS = {
+    "positive": "1",
+    "hard_negative": "0",
+    "uncertain": "",
 }
 
 
@@ -111,6 +117,17 @@ def load_existing_annotations(path):
         }
 
 
+def write_annotations(path, annotations):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    temporary_output = path + ".tmp"
+    with open(temporary_output, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=OUTPUT_FIELDS)
+        writer.writeheader()
+        for annotation in sorted(annotations.values(), key=annotation_key):
+            writer.writerow(annotation)
+    os.replace(temporary_output, path)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--review-file", required=True)
@@ -145,11 +162,7 @@ def main():
                 by_dataset_index,
                 by_url,
             )
-            training_label = {
-                "positive": "1",
-                "hard_negative": "0",
-                "uncertain": "",
-            }[review_label]
+            training_label = TRAINING_LABELS[review_label]
             annotation = {
                 "streamer_name": prediction["streamer_name"],
                 "vod_id": str(prediction["vod_id"]),
@@ -165,14 +178,7 @@ def main():
             annotations[annotation_key(annotation)] = annotation
             imported[review_label] += 1
 
-    os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
-    temporary_output = args.output + ".tmp"
-    with open(temporary_output, "w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=OUTPUT_FIELDS)
-        writer.writeheader()
-        for annotation in sorted(annotations.values(), key=annotation_key):
-            writer.writerow(annotation)
-    os.replace(temporary_output, args.output)
+    write_annotations(args.output, annotations)
 
     print(
         f"Imported {sum(imported.values())} reviews: "

@@ -1,6 +1,6 @@
 # Project Status (Living Doc)
 
-**Last updated:** 2026-08-08
+**Last updated:** 2026-08-21
 
 Agents and humans: read this first for current state and next actions.
 Deep methodology lives in `docs/twitch_classifier_brief.md`.
@@ -10,7 +10,7 @@ Training details live in `docs/training_playbook.md`.
 
 ## One-line status
 
-Window-v2 end-to-end path is live: train, export, parity, replay, and authenticated shadow all passed. Review companions include `session_id`; sessions can carry `vod_id` for VOD links. Next: review window-v2 candidates and measure acceptance quality.
+Harvest retrain `window-v2-harvest-seed0` finished: val AP **0.506** (better than live-hn 0.454, still below vod-seed0’s 0.545 on an easier in-community val split). Same epoch-1 overfit. Keep `window-v2-vod-seed0` live. Next: `analyze_run.py` on the harvest run, then optional FP review.
 
 ---
 
@@ -28,27 +28,49 @@ Window-v2 end-to-end path is live: train, export, parity, replay, and authentica
 | Layer | Status |
 |---|---|
 | Data collection pipeline | Window-v2 refetch completed; unavailable legacy windows quarantined |
-| Dataset + temporal features | Rebuilt: 15,376 examples, 4,800 positive / 10,576 negative |
-| Train / evaluate / holdout / review loop | Window-v2 candidate trained; saved at best validation AP |
-| Untouched-VOD evaluation | Legacy baseline recorded; new untouched evaluation required after retraining |
-| Hard-negative sample weighting | Not built yet |
+| Dataset + temporal features | Post-harvest rebuild: 23,706 examples, 7,603 positive / 16,103 negative |
+| Train / evaluate / holdout / review loop | `window-v2-harvest-seed0` trained (val AP 0.506); `window-v2-vod-seed0` still the live bundle |
+| Untouched-VOD evaluation | Harvest eval recorded for `window-v2-vod-seed0` (see below) |
+| Hard-negative sample weighting | Built: `training.hard_negative_weight: 3.0` on reviewed hard negatives |
 | ONNX export | Window-v2 bundle exported; 3,078-row parity passed with zero mismatches |
 | Go live clipper | Window-v2 unit/race tests, build, replay, and authenticated shadow passed |
-| Shadow-mode acceptance tracking | First window-v2 session recorded; human review pending |
+| Shadow-mode acceptance tracking | ~100/198 window-v2 candidates labeled; first acceptance readout below |
 | Paid product / UI | Later |
 
 ---
 
-## Window-v2 live shadow smoke
+## Window-v2 live shadow review (2026-08-11)
 
-- Streamer: `jasontheween`
-- Session: about 2m 27s, 386 messages, 45 inferences
-- Candidates: 1 at score `0.5053` / threshold `0.480`
-- Inference errors: 0
-- Logs: `data/live/shadow/window-v2/`
+Logs: `data/live/shadow/window-v2/`. Threshold: **0.480**.
 
-This proves the window-v2 live path works. Candidate quality still needs human
-VOD review; do not mix these records with the legacy five-second-lag smoke.
+### Volume (~9.9 useful streamer-hours; concurrent sessions overlap)
+
+| Streamer | Hours | Candidates | Cand/hour |
+|---|---:|---:|---:|
+| arky | 4.07 | 87 | 21.4 |
+| lacy | 2.29 | 73 | 31.8 |
+| jynxzi | 2.29 | 32 | 14.0 |
+| marlon | 1.20 | 5 | 4.2 |
+| jasontheween | 0.04 | 1 | (smoke) |
+| **Total** | **9.90** | **198** | **20.0** |
+
+### Acceptance (labeled rows only; `negative` counted as `hard_negative`)
+
+- Labeled: **100** / 198 (unlabeled mostly arky 53 + lacy 42)
+- Labels: 46 positive / 20 hard_negative / 34 uncertain
+- **Acceptance among decided** (`pos / (pos+hn)`): **69.7%**
+- Positive share of all labeled (uncertain counts against): **46.0%**
+- In-train streamers (lacy+marlon): decided acc **76.0%** (small marlon n=5, all non-positive)
+- Never-trained (arky+jynxzi): decided acc **65.9%**
+- Per-streamer decided acc: lacy **90.5%**, arky **83.3%**, jynxzi **52.2%**, marlon **0%** (n=4 decided)
+
+### Score compression (matches reviewer notes)
+
+- All candidate scores ≈ **0.48–0.60** (median **0.501**, p90 **0.544**, max **0.601**)
+- Positive median **0.505** vs hard_negative median **0.503** — almost no ranking separation
+- Common hard-negative themes in reasons: WW/gift spam, stream start, empty mix, emote-only
+
+First Jason smoke still only proves transport. Do not mix with legacy five-second-lag logs.
 
 ## Legacy live shadow smoke
 
@@ -64,6 +86,36 @@ window-v2 quality evidence.
 
 ---
 
+## Window-v2 harvest retrain (2026-08-21)
+
+- Run dir: `models/runs/window-v2-harvest-seed0`
+- Dataset: **23,706** (7,603 pos / 16,103 neg)
+- Hard-negative 3× applied to **36** train rows
+- Best epoch: **1** (early-stopped after epoch 4)
+- Saved threshold: **0.460**
+- VOD-grouped validation: precision **0.436**, recall **0.780**, F1 **0.560**
+- Validation AUC: **0.707**
+- Validation AP: **0.506**
+
+Better than live-hn (AP 0.454) on a larger mixed-streamer split. Not a clear replacement for `window-v2-vod-seed0` (val AP 0.545) because that older val set had no Arky/Jynxzi/PBM. Same overfitting: train AP 0.508→0.833 while val AP 0.506→0.450. Harvest VODs are no longer an untouched test for this run.
+
+---
+
+## Window-v2 live-hn retrain (2026-08-18)
+
+- Run dir: `models/runs/window-v2-live-hn-seed0`
+- Dataset: **15,442** (4,846 pos / 10,596 neg); +66 vs prior rebuild matches 46 live positives + 20 live hard-negatives
+- Hard-negative 3× applied to **34** train rows
+- Best epoch: **1** (early-stopped after epoch 4)
+- Saved threshold: **0.520**
+- VOD-grouped validation: precision **0.412**, recall **0.709**, F1 **0.521**
+- Validation AUC: **0.664**
+- Validation AP: **0.454**
+
+Worse than `window-v2-vod-seed0` on this split (AP 0.545 / AUC 0.727 / P 0.509). The split is not identical (live VODs are now in the pool). Same overfitting: train AP rose while val AP fell. Do not replace the live bundle until an untouched eval and/or a new shadow pass say otherwise.
+
+---
+
 ## Window-v2 model candidate
 
 - Run dir: `models/runs/window-v2-vod-seed0`
@@ -76,6 +128,32 @@ window-v2 quality evidence.
 Training metrics continued improving while validation AP fell after epoch 1,
 showing rapid overfitting. Early stopping correctly restored the epoch-1
 checkpoint.
+
+---
+
+### Untouched harvest test (2026-08-21)
+
+Manifest reconstructed from pre-Aug-19 raw mtimes after the snapshot was skipped:
+`data/splits/untouched_after_harvest.txt` (106 new VODs; live-session VODs excluded).
+
+```powershell
+python training/model/analyze_run.py --run-dir models/runs/window-v2-vod-seed0 --vod-manifest data/splits/untouched_after_harvest.txt
+```
+
+Results (`analysis-untouched_after_harvest/`):
+
+| Metric | Value |
+|---|---|
+| Windows | 7317 |
+| Threshold | 0.480 (saved; not retuned) |
+| Precision | 0.477 |
+| Recall | 0.580 |
+| F1 | 0.523 |
+| AUC | 0.677 |
+| AP | 0.485 |
+| Prevalence | 0.333 |
+
+Random AP ≈ **0.33**. This is weaker than the same run’s VOD-grouped val AP **0.545** (expected: most of these VODs are Arky/Jynxzi/PBM, never in training) but still better than chance. Do not retune on this manifest. These VODs may now be used in a later retrain; collect a new untouched set after that.
 
 ---
 
@@ -116,7 +194,7 @@ Random AP baseline ≈ positive prevalence ≈ **0.33**. This is meaningfully be
 1. Default validation is **whole-VOD split**, not random windows.
 2. True untouched test = evaluate a **saved** model with `analyze_run.py --vod-manifest` at its **saved** threshold. Do not retrain or retune first.
 3. `train.py --holdout-vods` is validation/tuning, **not** an untouched test.
-4. Manual reviews go through `import_reviews.py` → `data/reviews/window_labels.csv`. Never only edit `dataset.jsonl`.
+4. Manual reviews go through `import_reviews.py` or `import_live_reviews.py` → `data/reviews/window_labels.csv`. Live reviews also write `data/raw/chat_live/`. Never only edit `dataset.jsonl`.
 5. Product framing is **clipping sensitivity + review queue**, not raw “confidence %”.
 6. Current model capacity (embed 32 / GRU 64 / vocab 10k) is intentional for current data size.
 7. Export directly with `jax2onnx`; the old `jax2tf -> tf2onnx` route is deprecated.
@@ -127,8 +205,11 @@ Random AP baseline ≈ positive prevalence ≈ **0.33**. This is meaningfully be
    target `now - 30s`.
 10. The first Go release is hard-gated to **shadow mode** and contains no Create Clip path.
 11. Live chat uses one Twitch EventSub WebSocket and a user token with `user:read:chat`.
-12. Raw windows and model metadata carry geometry version 2; builders/export/live
+13. Raw windows and model metadata carry geometry version 2; builders/export/live
     must reject stale geometry instead of mixing contracts.
+14. Live shadow reviews become training data only via `import_live_reviews.py`.
+    Training applies `hard_negative_weight` (default 3×) to reviewed hard
+    negatives; live VODs used in that retrain are not an untouched test.
 
 ---
 
@@ -139,6 +220,8 @@ Random AP baseline ≈ positive prevalence ≈ **0.33**. This is meaningfully be
 | `config.yaml` | Streamers, model, training hyperparams |
 | `data/processed/dataset.jsonl` | Labeled windows |
 | `data/reviews/window_labels.csv` | Durable manual reviews |
+| `data/raw/chat_live/` | Geometry-v2 windows materialized from live shadow reviews |
+| `models/runs/window-v2-live-hn-seed0/` | Planned retrain after live-review import + hard-negative weighting |
 | `data/splits/vods_before_collection.txt` | Baseline VOD snapshot |
 | `data/splits/untouched_vods.txt` | New VODs used for the recorded untouched test |
 | `models/runs/reviewed-vod-seed0/` | Superseded legacy-geometry model |
@@ -179,14 +262,27 @@ Random AP baseline ≈ positive prevalence ≈ **0.33**. This is meaningfully be
 - [x] Verify Python/Go preprocessing parity and build the Go executable
 - [x] Run positive/negative replay against the new bundle
 - [x] Run a new authenticated window-v2 shadow session
-- [ ] Review window-v2 live candidates and track acceptance rate / bad suggestions per hour
+- [x] Review a first pass of window-v2 live candidates and measure acceptance / candidates per hour
+- [x] Build live-review → `window_labels` + `data/raw/chat_live/` import so shadow labels can train
+- [x] Implement hard-negative sample weighting (~3×) as part of the next retrain
+- [ ] Optionally finish remaining ~98 unlabeled rows (mostly arky/lacy) to tighten estimates
+- [x] Run live import, rebuild, and train `models/runs/window-v2-live-hn-seed0` (do not overwrite `window-v2-vod-seed0`)
+- [ ] After the live-hn retrain, run a **new** untouched VOD eval that excludes imported live VODs; do not export over the previous bundle on val AP alone
 
-### 2. Improve model in parallel / after shadow data
+```powershell
+python training/collect/import_live_reviews.py
+python training/collect/build_dataset.py
+python training/features/encode.py
+python training/model/train.py --output-dir models/runs/window-v2-live-hn-seed0
+```
 
-- [ ] Optionally review more untouched false positives
-- [ ] Implement hard-negative sample weighting (~3×)
-- [ ] Retrain only after new labels or live feedback exist
-- [ ] Collect a **new** untouched VOD set after the next retrain cycle
+### 2. Improve model after this shadow readout
+
+- [x] Add never-trained live streamers (arky/jynxzi) into collection when ready for broader coverage
+- [x] After the live-hn retrain, run a **new** untouched VOD eval that excludes imported live VODs
+- [x] Retrain a **new** run dir on the harvest dataset (keep `window-v2-vod-seed0` as the live bundle until the new run beats it)
+- [ ] `python training/model/analyze_run.py --run-dir models/runs/window-v2-harvest-seed0` then optional top-FP review
+- [ ] After that retrain, snapshot VODs first, then collect a **new** untouched set before any later retrain
 
 ### 3. Shadow review linking (partial now / auto later)
 
@@ -228,8 +324,11 @@ Offline precision overstates live precision because the dataset is enriched (~1:
 # Activate env
 .\.venv\Scripts\Activate.ps1
 
-# Re-check untouched analysis summary
-# models/runs/reviewed-vod-seed0/analysis-untouched_vods/summary.json
+# Import live reviews, rebuild, retrain (do not overwrite window-v2-vod-seed0)
+python training/collect/import_live_reviews.py
+python training/collect/build_dataset.py
+python training/features/encode.py
+python training/model/train.py --output-dir models/runs/window-v2-live-hn-seed0
 ```
 
 Tell a new agent:

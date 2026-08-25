@@ -61,12 +61,12 @@ def create_state(
 
 
 @jax.jit
-def train_step(state, tokens, features, labels, pos_weight, dropout_key):
+def train_step(state, tokens, features, labels, pos_weight, sample_weight, dropout_key):
     def loss_fn(params):
         logits = state.apply_fn(
             params, tokens, features, training=True, rngs={"dropout": dropout_key}
         )
-        return weighted_bce(logits, labels, pos_weight)
+        return weighted_bce(logits, labels, pos_weight, sample_weight)
 
     loss, grads = jax.value_and_grad(loss_fn)(state.params)
     state = state.apply_gradients(grads=grads)
@@ -199,6 +199,25 @@ def main():
     else:
         pos_weight = float(configured_pos_weight)
 
+    hard_negative_weight = float(train_cfg.get("hard_negative_weight", 1.0))
+    sample_weights = np.array(
+        [
+            hard_negative_weight
+            if row.get("review_label") == "hard_negative"
+            else 1.0
+            for row in rows
+        ],
+        dtype=np.float32,
+    )
+    train_hard_negatives = int(
+        np.sum(
+            [
+                rows[int(index)].get("review_label") == "hard_negative"
+                for index in train_idx
+            ]
+        )
+    )
+
     batch_size = int(train_cfg.get("batch_size", 32))
     epochs = int(train_cfg.get("epochs", 20))
     learning_rate = float(train_cfg.get("learning_rate", 1e-3))
@@ -209,7 +228,9 @@ def main():
 
     print(
         f"Vocab: {len(vocab)}  Features: {num_features}  "
-        f"Positive weight: {pos_weight:.3f}"
+        f"Positive weight: {pos_weight:.3f}  "
+        f"Hard-negative weight: {hard_negative_weight:.3f} "
+        f"({train_hard_negatives} train rows)"
     )
 
     model = ChatClassifier(
@@ -245,8 +266,15 @@ def main():
         rng, shuffle_rng = jax.random.split(rng)
         np_rng = np.random.default_rng(int(shuffle_rng[0]))
 
-        for bt, bf, bl in iterate_batches(
-            tokens, features, labels, train_idx, batch_size, rng=np_rng, shuffle=True
+        for bt, bf, bl, bw in iterate_batches(
+            tokens,
+            features,
+            labels,
+            train_idx,
+            batch_size,
+            rng=np_rng,
+            shuffle=True,
+            sample_weights=sample_weights,
         ):
             rng, dropout_key = jax.random.split(rng)
             state, _ = train_step(
@@ -255,6 +283,7 @@ def main():
                 jnp.asarray(bf),
                 jnp.asarray(bl),
                 pos_weight,
+                jnp.asarray(bw),
                 dropout_key,
             )
 
@@ -332,6 +361,7 @@ def main():
         "best_val_metrics": best_metrics,
         "selection_metric": selection_metric,
         "pos_weight": pos_weight,
+        "hard_negative_weight": hard_negative_weight,
         "split": split_desc,
         "holdout_vod_ids": (
             sorted(explicit_holdout_vod_ids)

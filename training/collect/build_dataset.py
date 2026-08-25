@@ -14,6 +14,7 @@ from window_geometry import (
 CLIPS_FILE = "data/raw/clips.csv"
 POSITIVE_DIR = "data/raw/chat"
 NEGATIVE_DIR = "data/raw/chat_negatives"
+LIVE_DIR = "data/raw/chat_live"
 OUTPUT_DIR = "data/processed"
 OUTPUT_FILE = os.path.join(OUTPUT_DIR, "dataset.jsonl")
 REVIEW_LABELS_FILE = "data/reviews/window_labels.csv"
@@ -151,7 +152,7 @@ def require_current_geometry(record, path):
     if not has_current_geometry(record):
         raise ValueError(
             f"{path} uses stale or invalid window geometry. "
-            "Re-run fetch_chat.py and fetch_negatives.py before rebuilding."
+            "Rebuild from current-geometry sources before continuing."
         )
 
 
@@ -206,6 +207,33 @@ def main():
         if processed_files % 500 == 0:
             print(f"Processed {processed_files} non-empty chat files...")
 
+    seen_keys = {example_key(example) for example in examples}
+    live_added = 0
+    live_skipped_dup = 0
+    for path in iter_json_files(LIVE_DIR):
+        with open(path, "r", encoding="utf-8") as f:
+            record = json.load(f)
+
+        require_current_geometry(record, path)
+        if not record.get("messages"):
+            skipped_empty += 1
+            continue
+
+        streamer_name = record.get("streamer_name", "unknown")
+        label = int(record.get("label", 0))
+        example = build_example(record, label=label, streamer_name=streamer_name)
+        key = example_key(example)
+        if key in seen_keys:
+            live_skipped_dup += 1
+            continue
+
+        seen_keys.add(key)
+        examples.append(example)
+        live_added += 1
+        processed_files += 1
+        if processed_files % 500 == 0:
+            print(f"Processed {processed_files} non-empty chat files...")
+
     examples, review_counts = apply_review_annotations(
         examples,
         review_annotations,
@@ -236,6 +264,10 @@ def main():
         )
     if missing_streamer:
         print(f"Positives with no streamer match in clips.csv: {missing_streamer}")
+    print(
+        f"Live windows: {live_added} added, "
+        f"{live_skipped_dup} skipped as duplicates of historical rows"
+    )
     print(f"Saved to: {OUTPUT_FILE}")
 
 
