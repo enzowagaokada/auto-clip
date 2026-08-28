@@ -20,6 +20,33 @@ feature scaler from the training split only. The model must ship with
 `models/vocab.json` and `models/inference_meta.json`; do not substitute the
 full-dataset vocabulary from `data/processed/`.
 
+`build_dataset.py` now fails closed on unresolved exact-key label conflicts,
+removes exact duplicates, excludes unreviewed negatives within 60 seconds of a
+known clip, and assigns deterministic event groups/base weights. Resolve a
+reported conflict through `data/reviews/window_labels.csv`; do not add a
+one-off exception to generated `dataset.jsonl`.
+
+Before training, `train.py` validates the dataset identity fields and creates a
+content-addressed snapshot under `data/processed/snapshots/`. Every new run
+writes `run_manifest.json` with the exact snapshot, train/validation rows and
+VODs, configuration, and hashes. `analyze_run.py` and ONNX verification use
+that immutable snapshot for new runs rather than reconstructing a split from
+the mutable current dataset.
+
+Create the fixed remediation validation manifest once after the cleaned rebuild:
+
+```powershell
+python training/model/create_remediation_split.py
+```
+
+Use it for every comparable remediation run:
+
+```powershell
+python training/model/train.py --holdout-vods data/splits/remediation_validation_vods.txt --output-dir models/runs/<unique-run>
+```
+
+Do not regenerate that manifest during the experiment series.
+
 The default validation split keeps complete VODs together. For the stronger
 generalization test, hold out each streamer in turn:
 
@@ -118,8 +145,10 @@ python training/model/train.py --output-dir models/runs/window-v2-live-hn-seed0
 Reviewed positives override the original negative label, reviewed hard
 negatives remain explicit negatives, and reviewed uncertain windows are
 excluded. Training applies `hard_negative_weight` (default 3.0) only to
-reviewed `hard_negative` rows in the training loss; validation metrics stay
-unweighted. Once reviews are incorporated into training, evaluate the resulting
+reviewed `hard_negative` rows in the training loss. The multiplier is combined
+with event-group base weights, and each batch loss is normalized by its total
+effective weight. Window- and event-level validation metrics stay unweighted.
+Once reviews are incorporated into training, evaluate the resulting
 model on new untouched VODs; the reviewed windows — including live VODs that
 were imported — are no longer an unbiased test set.
 
@@ -158,11 +187,11 @@ Evaluate the already-trained window-v2 model at its saved threshold using a
 fresh manifest that was not used by the legacy model:
 
 ```powershell
-python training/model/analyze_run.py --run-dir models/runs/window-v2-vod-seed0 --vod-manifest data/splits/window_v2_untouched_vods.txt
+python training/model/analyze_run.py --run-dir models/runs/window-v2-vod-seed0 --vod-manifest data/splits/untouched_after_harvest.txt
 ```
 
 External-test output goes to
-`models/runs/window-v2-vod-seed0/analysis-window_v2_untouched_vods/`. Threshold
+`models/runs/window-v2-vod-seed0/analysis-untouched_after_harvest/`. Threshold
 reports are deliberately omitted so the test is not silently used for tuning.
 Record the fixed-threshold metrics before inspecting errors. The previously
 recorded `reviewed-vod-seed0` untouched result remains historical evidence for
@@ -251,8 +280,9 @@ The exporter writes a generated bundle to
 `models/exports/window-v2-vod-seed0/` containing the ONNX graph, saved
 vocabulary, inference metadata, and checksum manifest. Verification checks the
 graph contract and compares JAX and ONNX logits/sigmoid decisions over the
-reconstructed saved validation split. Do not start the Go clipper if parity or
-manifest verification fails.
+exact validation rows in `run_manifest.json` for new runs. Legacy runs without a
+run manifest retain their reconstruction fallback. Do not start the Go clipper
+if parity or manifest verification fails.
 
 Helix `vod_offset` is the start of the clip video. Historical collection uses
 the fixed 35-second window `[clip start - 5s, clip start + 30s]`; clip duration

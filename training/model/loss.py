@@ -5,7 +5,7 @@ import optax
 
 
 def weighted_bce(logits, labels, pos_weight, sample_weight=1.0):
-    """Mean weighted BCE over a batch.
+    """Weighted BCE normalized by the effective batch weight.
 
     ``pos_weight`` is normally calculated from the training split rather than
     hardcoded. ``sample_weight`` is a per-example multiplier (for example the
@@ -14,4 +14,4 @@ def weighted_bce(logits, labels, pos_weight, sample_weight=1.0):
     """
     losses = optax.sigmoid_binary_cross_entropy(logits, labels)
     weights = (1.0 + labels * (pos_weight - 1.0)) * sample_weight
-    return jnp.mean(losses * weights)
+    return jnp.sum(losses * weights) / jnp.maximum(jnp.sum(weights), 1e-8)

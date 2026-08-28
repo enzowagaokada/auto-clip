@@ -31,6 +31,12 @@ from data import (
     vod_group_split,
     vod_manifest_split,
 )
+from run_manifest import (
+    RUN_MANIFEST_FILENAME,
+    indices_from_manifest,
+    load_manifest_dataset,
+    load_run_manifest,
+)
 
 
 DEFAULT_RUN_DIR = Path("models/runs/window-v2-vod-seed0")
@@ -144,14 +150,26 @@ def main():
         run_metadata,
         run_smoke=True,
     )
-    with open(args.config, "r", encoding="utf-8") as file:
-        config = yaml.safe_load(file)
-    rows = load_dataset_rows(str(args.dataset))
-    validation_indices, saved_validation_size = reconstruct_validation_indices(
-        rows,
-        run_metadata,
-        config,
-    )
+    run_manifest_path = args.run_dir / RUN_MANIFEST_FILENAME
+    if run_manifest_path.exists():
+        run_manifest = load_run_manifest(args.run_dir)
+        rows = load_manifest_dataset(run_manifest)
+        validation_indices = np.asarray(
+            indices_from_manifest(rows, run_manifest, "validation"),
+            dtype=np.int64,
+        )
+        saved_validation_size = len(
+            run_manifest["split"]["validation_rows"]
+        )
+    else:
+        with open(args.config, "r", encoding="utf-8") as file:
+            config = yaml.safe_load(file)
+        rows = load_dataset_rows(str(args.dataset))
+        validation_indices, saved_validation_size = reconstruct_validation_indices(
+            rows,
+            run_metadata,
+            config,
+        )
     total_validation_rows = len(validation_indices)
     matches_saved_validation = (
         not saved_validation_size or total_validation_rows == saved_validation_size

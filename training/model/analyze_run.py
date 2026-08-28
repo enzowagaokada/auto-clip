@@ -28,8 +28,15 @@ from data import (
 from evaluate import (
     confusion_counts,
     evaluate,
+    evaluate_events,
     find_best_threshold,
     precision_recall_f1,
+)
+from run_manifest import (
+    RUN_MANIFEST_FILENAME,
+    indices_from_manifest,
+    load_manifest_dataset,
+    load_run_manifest,
 )
 
 
@@ -145,6 +152,8 @@ def build_prediction_rows(rows, val_idx, probabilities, threshold):
         predictions.append(
             {
                 "dataset_index": int(dataset_index),
+                "example_id": row.get("example_id"),
+                "event_group_id": row.get("event_group_id"),
                 "outcome": outcome(label, predicted),
                 "label": label,
                 "predicted_label": predicted,
@@ -289,6 +298,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-dir", required=True)
     parser.add_argument(
+        "--dataset",
+        default="data/processed/dataset.jsonl",
+        help="Dataset used only for an external --vod-manifest evaluation.",
+    )
+    parser.add_argument(
         "--vod-manifest",
         default=None,
         help=(
@@ -336,12 +350,9 @@ def main():
             "existing saved reports or retrain on the window-v2 dataset"
         )
     vocab = load_json(os.path.join(args.run_dir, "vocab.json"))
-    with open("config.yaml", "r", encoding="utf-8") as f:
-        config = yaml.safe_load(f)
-
-    rows = load_dataset_rows()
     external_test = args.vod_manifest is not None
     if external_test:
+        rows = load_dataset_rows(args.dataset)
         external_vod_ids = load_vod_manifest(args.vod_manifest)
         _, val_idx = vod_manifest_split(rows, external_vod_ids)
         reviewed_holdout_rows = [
@@ -359,19 +370,29 @@ def main():
             f"{os.path.normpath(args.vod_manifest)}"
         )
     else:
-        val_idx = validation_indices(rows, metadata, config)
-        saved_confusion = metadata.get("best_val_metrics", {}).get("confusion", {})
-        expected_validation_size = sum(
-            int(saved_confusion.get(name, 0)) for name in ("tp", "fp", "fn", "tn")
-        )
-        if expected_validation_size and len(val_idx) != expected_validation_size:
-            raise ValueError(
-                "The processed dataset changed after this model was trained: "
-                f"saved validation size={expected_validation_size}, "
-                f"current reconstructed size={len(val_idx)}. Analyze the run against "
-                "its original dataset or retrain it."
+        manifest_path = os.path.join(args.run_dir, RUN_MANIFEST_FILENAME)
+        if os.path.exists(manifest_path):
+            run_manifest = load_run_manifest(args.run_dir)
+            rows = load_manifest_dataset(run_manifest)
+            val_idx = indices_from_manifest(rows, run_manifest, "validation")
+            evaluation_split = run_manifest["split"]["description"]
+        else:
+            with open("config.yaml", "r", encoding="utf-8") as f:
+                config = yaml.safe_load(f)
+            rows = load_dataset_rows()
+            val_idx = validation_indices(rows, metadata, config)
+            saved_confusion = metadata.get("best_val_metrics", {}).get("confusion", {})
+            expected_validation_size = sum(
+                int(saved_confusion.get(name, 0))
+                for name in ("tp", "fp", "fn", "tn")
             )
-        evaluation_split = metadata["split"]
+            if expected_validation_size and len(val_idx) != expected_validation_size:
+                raise ValueError(
+                    "The processed dataset changed after this legacy model was trained: "
+                    f"saved validation size={expected_validation_size}, "
+                    f"current reconstructed size={len(val_idx)}."
+                )
+            evaluation_split = metadata["split"]
     tokens, features, labels = prepare_dataset_from_saved_preprocessing(
         rows=rows,
         vocab=vocab,
@@ -402,6 +423,11 @@ def main():
     else:
         threshold = args.threshold
     metrics = evaluate(val_labels, probabilities, threshold=threshold)
+    event_metrics = (
+        evaluate_events(rows, val_idx, probabilities, threshold=threshold)
+        if all(rows[int(index)].get("event_group_id") for index in val_idx)
+        else None
+    )
     explore_thresholds = not external_test or args.explore_thresholds
     if explore_thresholds:
         best_f1_threshold, best_f1_metrics = find_best_threshold(
@@ -473,6 +499,7 @@ def main():
         "positive_prevalence": float(np.mean(val_labels)),
         "threshold": threshold,
         "metrics": metrics,
+        "event_metrics": event_metrics,
         "threshold_exploration_performed": explore_thresholds,
         "best_f1_threshold": best_f1_threshold,
         "best_f1_metrics": best_f1_metrics,
@@ -498,6 +525,11 @@ def main():
         f"AUC={metrics['auc']:.3f} "
         f"AP={metrics['average_precision']:.3f}"
     )
+    if event_metrics is not None:
+        print(
+            f"Event AUC={event_metrics['auc']:.3f} "
+            f"AP={event_metrics['average_precision']:.3f}"
+        )
     print(
         f"False positives: {len(false_positives)} | "
         f"False negatives: {len(false_negatives)}"

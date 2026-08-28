@@ -1,6 +1,8 @@
 import csv
+import hashlib
 import json
 import os
+from collections import defaultdict
 
 import pandas as pd
 
@@ -17,15 +19,30 @@ NEGATIVE_DIR = "data/raw/chat_negatives"
 LIVE_DIR = "data/raw/chat_live"
 OUTPUT_DIR = "data/processed"
 OUTPUT_FILE = os.path.join(OUTPUT_DIR, "dataset.jsonl")
+AUDIT_FILE = os.path.join(OUTPUT_DIR, "dataset_audit.json")
 REVIEW_LABELS_FILE = "data/reviews/window_labels.csv"
 TEMPORAL_BUCKET_SECONDS = 5
 TEMPORAL_BUCKET_COUNT = 7
+CLIP_EXCLUSION_SECONDS = 60
+EVENT_GROUP_SECONDS = 35
+SOURCE_PRIORITY = {
+    "historical_positive": 0,
+    "sampled_negative": 1,
+    "live_review": 2,
+}
 
 
-def load_clip_streamers():
-    """Map clip_id -> streamer_name from clips.csv (positives lack this field)."""
+def load_clip_metadata():
+    """Return clip streamer lookup and known clip anchors grouped by VOD."""
     df = pd.read_csv(CLIPS_FILE)
-    return dict(zip(df["clip_id"].astype(str), df["streamer_name"].astype(str)))
+    streamers = dict(zip(df["clip_id"].astype(str), df["streamer_name"].astype(str)))
+    offsets_by_vod = defaultdict(list)
+    for row in df.to_dict("records"):
+        offsets_by_vod[str(row["vod_id"])].append(int(float(row["vod_offset"])))
+    return streamers, {
+        vod_id: sorted(set(offsets))
+        for vod_id, offsets in offsets_by_vod.items()
+    }
 
 
 def example_key(record):
@@ -33,6 +50,57 @@ def example_key(record):
         str(record.get("streamer_name", "unknown")).strip().lower(),
         str(record.get("vod_id")),
         int(float(record.get("target_offset") or 0)),
+    )
+
+
+def canonical_json(value):
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def stable_hash(value):
+    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def file_hash(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def example_id(example):
+    return stable_hash(
+        {
+            "streamer_name": example_key(example)[0],
+            "vod_id": example_key(example)[1],
+            "target_offset": example_key(example)[2],
+            "window_geometry_version": int(example["window_geometry_version"]),
+        }
+    )
+
+
+def content_hash(example):
+    return stable_hash(
+        {
+            "example_id": example["example_id"],
+            "label": int(example["label"]),
+            "messages": example["messages"],
+            "message_count": int(example["message_count"]),
+            "messages_per_second": float(example["messages_per_second"]),
+            "unique_users": int(example["unique_users"]),
+            "message_rate_buckets": example["message_rate_buckets"],
+            "message_rate_change": float(example["message_rate_change"]),
+            "peak_5s_rate": float(example["peak_5s_rate"]),
+            "repeat_message_ratio": float(example["repeat_message_ratio"]),
+            "window_start": float(example["window_start"]),
+            "window_end": float(example["window_end"]),
+        }
     )
 
 
@@ -61,11 +129,138 @@ def apply_review_annotations(examples, annotations):
         if review_label == "uncertain":
             continue
 
-        example["label"] = int(annotation["training_label"])
-        example["review_label"] = review_label
-        example["review_notes"] = annotation.get("review_notes", "")
-        reviewed_examples.append(example)
+        reviewed = dict(example)
+        reviewed["label"] = int(annotation["training_label"])
+        reviewed["review_label"] = review_label
+        reviewed["review_notes"] = annotation.get("review_notes", "")
+        reviewed_examples.append(reviewed)
     return reviewed_examples, counts
+
+
+def is_clip_collision(example, clip_offsets_by_vod):
+    if example["source"] != "sampled_negative":
+        return False
+    target = example_key(example)[2]
+    return any(
+        abs(target - clip_offset) < CLIP_EXCLUSION_SECONDS
+        for clip_offset in clip_offsets_by_vod.get(str(example["vod_id"]), [])
+    )
+
+
+def exclude_clip_collisions(examples, clip_offsets_by_vod):
+    kept = []
+    excluded = []
+    overridden = []
+    for example in examples:
+        if not is_clip_collision(example, clip_offsets_by_vod):
+            kept.append(example)
+        elif example.get("review_label") == "hard_negative":
+            kept.append(example)
+            overridden.append(example)
+        else:
+            excluded.append(example)
+    return kept, excluded, overridden
+
+
+def deduplicate_examples(examples):
+    """Resolve exact keys deterministically and fail on unresolved label conflicts."""
+    grouped = defaultdict(list)
+    for example in examples:
+        grouped[example_key(example)].append(example)
+
+    deduplicated = []
+    duplicate_rows = 0
+    duplicate_keys = 0
+    conflicts = []
+    for key in sorted(grouped):
+        candidates = grouped[key]
+        if len(candidates) > 1:
+            duplicate_keys += 1
+            duplicate_rows += len(candidates) - 1
+        labels = {int(candidate["label"]) for candidate in candidates}
+        if len(labels) > 1:
+            conflicts.append(
+                {
+                    "key": key,
+                    "sources": [
+                        {
+                            "path": candidate["_source_path"],
+                            "source": candidate["source"],
+                            "label": int(candidate["label"]),
+                        }
+                        for candidate in candidates
+                    ],
+                }
+            )
+            continue
+        selected = min(
+            candidates,
+            key=lambda candidate: (
+                SOURCE_PRIORITY[candidate["source"]],
+                candidate["_source_path"],
+                stable_hash(candidate["messages"]),
+            ),
+        )
+        deduplicated.append(selected)
+
+    if conflicts:
+        details = []
+        for conflict in conflicts:
+            sources = ", ".join(
+                f"{item['path']} ({item['source']}, label={item['label']})"
+                for item in conflict["sources"]
+            )
+            details.append(f"{conflict['key']}: {sources}")
+        raise ValueError(
+            f"{len(conflicts)} unresolved label conflict(s) remain after reviews:\n"
+            + "\n".join(details)
+        )
+    return deduplicated, duplicate_keys, duplicate_rows
+
+
+def assign_event_groups(examples):
+    """Assign bounded, fixed-anchor event groups and normalized base weights."""
+    by_stream = defaultdict(list)
+    for example in examples:
+        by_stream[(example_key(example)[0], str(example["vod_id"]))].append(example)
+
+    for (streamer, vod_id), group_rows in sorted(by_stream.items()):
+        ordered = sorted(
+            group_rows,
+            key=lambda row: (example_key(row)[2], row["example_id"]),
+        )
+        group_anchor = None
+        for row in ordered:
+            target = example_key(row)[2]
+            if group_anchor is None or target - group_anchor >= EVENT_GROUP_SECONDS:
+                group_anchor = target
+            row["event_group_id"] = stable_hash(
+                {
+                    "streamer_name": streamer,
+                    "vod_id": vod_id,
+                    "anchor_offset": group_anchor,
+                    "window_geometry_version": int(row["window_geometry_version"]),
+                }
+            )
+
+    cross_group_overlaps = 0
+    for group_rows in by_stream.values():
+        ordered = sorted(group_rows, key=lambda row: example_key(row)[2])
+        for left_index, left in enumerate(ordered):
+            left_target = example_key(left)[2]
+            for right in ordered[left_index + 1:]:
+                difference = example_key(right)[2] - left_target
+                if difference >= EVENT_GROUP_SECONDS:
+                    break
+                if right["event_group_id"] != left["event_group_id"]:
+                    cross_group_overlaps += 1
+
+    group_sizes = defaultdict(int)
+    for example in examples:
+        group_sizes[example["event_group_id"]] += 1
+    for example in examples:
+        example["base_sample_weight"] = 1.0 / group_sizes[example["event_group_id"]]
+    return len(group_sizes), cross_group_overlaps
 
 
 def compute_features(record):
@@ -116,7 +311,7 @@ def compute_features(record):
     }
 
 
-def build_example(record, label, streamer_name):
+def build_example(record, label, streamer_name, source, source_path):
     """Assemble one dataset row from a raw chat window."""
     features = compute_features(record)
 
@@ -124,7 +319,9 @@ def build_example(record, label, streamer_name):
         "label": label,
         "streamer_name": streamer_name,
         "vod_id": str(record.get("vod_id")),
-        "target_offset": record.get("target_offset"),
+        "target_offset": int(float(record.get("target_offset") or 0)),
+        "source": source,
+        "_source_path": os.path.normpath(source_path),
         "message_count": features["message_count"],
         "messages_per_second": features["messages_per_second"],
         "unique_users": features["unique_users"],
@@ -161,7 +358,7 @@ def main():
         print(f"Error: {CLIPS_FILE} not found. Run fetch_clips.py first.")
         return
 
-    clip_streamers = load_clip_streamers()
+    clip_streamers, clip_offsets_by_vod = load_clip_metadata()
     review_annotations = load_review_annotations()
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -186,7 +383,15 @@ def main():
             missing_streamer += 1
             streamer_name = "unknown"
 
-        examples.append(build_example(record, label=1, streamer_name=streamer_name))
+        examples.append(
+            build_example(
+                record,
+                label=1,
+                streamer_name=streamer_name,
+                source="historical_positive",
+                source_path=path,
+            )
+        )
         processed_files += 1
         if processed_files % 500 == 0:
             print(f"Processed {processed_files} non-empty chat files...")
@@ -202,14 +407,20 @@ def main():
             continue
 
         streamer_name = record.get("streamer_name", "unknown")
-        examples.append(build_example(record, label=0, streamer_name=streamer_name))
+        examples.append(
+            build_example(
+                record,
+                label=0,
+                streamer_name=streamer_name,
+                source="sampled_negative",
+                source_path=path,
+            )
+        )
         processed_files += 1
         if processed_files % 500 == 0:
             print(f"Processed {processed_files} non-empty chat files...")
 
-    seen_keys = {example_key(example) for example in examples}
     live_added = 0
-    live_skipped_dup = 0
     for path in iter_json_files(LIVE_DIR):
         with open(path, "r", encoding="utf-8") as f:
             record = json.load(f)
@@ -221,23 +432,38 @@ def main():
 
         streamer_name = record.get("streamer_name", "unknown")
         label = int(record.get("label", 0))
-        example = build_example(record, label=label, streamer_name=streamer_name)
-        key = example_key(example)
-        if key in seen_keys:
-            live_skipped_dup += 1
-            continue
-
-        seen_keys.add(key)
-        examples.append(example)
+        examples.append(
+            build_example(
+                record,
+                label=label,
+                streamer_name=streamer_name,
+                source="live_review",
+                source_path=path,
+            )
+        )
         live_added += 1
         processed_files += 1
         if processed_files % 500 == 0:
             print(f"Processed {processed_files} non-empty chat files...")
 
+    raw_examples = len(examples)
     examples, review_counts = apply_review_annotations(
         examples,
         review_annotations,
     )
+    examples, proximity_excluded, proximity_overridden = exclude_clip_collisions(
+        examples,
+        clip_offsets_by_vod,
+    )
+    examples, duplicate_keys, duplicate_rows = deduplicate_examples(examples)
+
+    for example in examples:
+        example["example_id"] = example_id(example)
+    event_groups, cross_group_overlaps = assign_event_groups(examples)
+    for example in examples:
+        example["content_hash"] = content_hash(example)
+        example.pop("_source_path", None)
+    examples.sort(key=lambda example: example["example_id"])
 
     temporary_output = OUTPUT_FILE + ".tmp"
     with open(temporary_output, "w", encoding="utf-8") as f:
@@ -247,11 +473,49 @@ def main():
 
     positives = sum(1 for e in examples if e["label"] == 1)
     negatives = sum(1 for e in examples if e["label"] == 0)
+    effective_positives = sum(
+        e["base_sample_weight"] for e in examples if e["label"] == 1
+    )
+    effective_negatives = sum(
+        e["base_sample_weight"] for e in examples if e["label"] == 0
+    )
+    audit = {
+        "dataset_sha256": file_hash(OUTPUT_FILE),
+        "raw_json_files": processed_files + skipped_empty,
+        "raw_non_empty_examples": raw_examples,
+        "skipped_empty": skipped_empty,
+        "output_examples": len(examples),
+        "positives": positives,
+        "negatives": negatives,
+        "effective_positives": effective_positives,
+        "effective_negatives": effective_negatives,
+        "review_applications": review_counts,
+        "missing_positive_streamer": missing_streamer,
+        "live_windows_read": live_added,
+        "duplicate_keys": duplicate_keys,
+        "duplicate_rows_removed": duplicate_rows,
+        "unresolved_conflicts": 0,
+        "negative_clip_collisions_excluded": len(proximity_excluded),
+        "negative_clip_collisions_review_overridden": len(proximity_overridden),
+        "event_groups": event_groups,
+        "cross_group_direct_overlaps": cross_group_overlaps,
+    }
+    temporary_audit = AUDIT_FILE + ".tmp"
+    with open(temporary_audit, "w", encoding="utf-8", newline="\n") as f:
+        json.dump(audit, f, ensure_ascii=False, sort_keys=True, indent=2)
+        f.write("\n")
+    os.replace(temporary_audit, AUDIT_FILE)
 
     print("\n--- Summary ---")
+    print(f"Raw JSON files: {processed_files + skipped_empty}")
+    print(f"Raw non-empty examples: {raw_examples}")
     print(f"Total examples: {len(examples)}")
     print(f"Positives (label=1): {positives}")
     print(f"Negatives (label=0): {negatives}")
+    print(
+        "Effective event-weighted counts: "
+        f"positive={effective_positives:.3f} negative={effective_negatives:.3f}"
+    )
     if positives:
         print(f"Negative:positive ratio: {negatives / positives:.2f}:1")
     print(f"Skipped (no messages): {skipped_empty}")
@@ -264,11 +528,21 @@ def main():
         )
     if missing_streamer:
         print(f"Positives with no streamer match in clips.csv: {missing_streamer}")
+    print(f"Live windows read: {live_added}")
     print(
-        f"Live windows: {live_added} added, "
-        f"{live_skipped_dup} skipped as duplicates of historical rows"
+        f"Exact duplicates removed: {duplicate_rows} rows across "
+        f"{duplicate_keys} keys"
+    )
+    print(
+        f"Negative clip collisions: {len(proximity_excluded)} excluded, "
+        f"{len(proximity_overridden)} retained by durable hard-negative review"
+    )
+    print(
+        f"Event groups: {event_groups}; "
+        f"cross-group direct overlaps: {cross_group_overlaps}"
     )
     print(f"Saved to: {OUTPUT_FILE}")
+    print(f"Audit saved to: {AUDIT_FILE}")
 
 
 if __name__ == "__main__":

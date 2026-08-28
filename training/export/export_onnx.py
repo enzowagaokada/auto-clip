@@ -21,6 +21,7 @@ from export_common import (
     MODEL_FILENAME,
     OUTPUT_NAMES,
     PARAMS_FILENAME,
+    RUN_MANIFEST_FILENAME,
     VOCAB_FILENAME,
     display_path,
     export_forward,
@@ -123,9 +124,12 @@ def main():
         name: sha256_file(output_dir / name)
         for name in (MODEL_FILENAME, VOCAB_FILENAME, META_FILENAME)
     }
+    source_names = [PARAMS_FILENAME, VOCAB_FILENAME, META_FILENAME]
+    if (args.run_dir / RUN_MANIFEST_FILENAME).is_file():
+        source_names.append(RUN_MANIFEST_FILENAME)
     source_checksums = {
         name: sha256_file(args.run_dir / name)
-        for name in (PARAMS_FILENAME, VOCAB_FILENAME, META_FILENAME)
+        for name in source_names
     }
     manifest = {
         "schema_version": 1,

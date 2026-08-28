@@ -3,7 +3,12 @@ import os
 import tempfile
 import unittest
 
-from fetch_negatives import existing_negative_offsets, sample_negative_offsets
+from fetch_negatives import (
+    existing_negative_offsets,
+    negative_shortfall,
+    quarantine_clip_collisions,
+    sample_negative_offsets,
+)
 from window_geometry import (
     WINDOW_GEOMETRY_NAME,
     WINDOW_GEOMETRY_VERSION,
@@ -75,6 +80,55 @@ class WindowGeometryTest(unittest.TestCase):
             )
             self.assertEqual(current_offsets, {100})
             self.assertEqual(stale_offsets, {200})
+
+    def test_new_clip_quarantines_existing_negative(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "123_159.json")
+            with open(path, "w", encoding="utf-8") as file:
+                json.dump(
+                    {
+                        "target_offset": 159,
+                        "window_start": 154,
+                        "window_end": 189,
+                        "window_geometry": WINDOW_GEOMETRY_NAME,
+                        "window_geometry_version": WINDOW_GEOMETRY_VERSION,
+                    },
+                    file,
+                )
+            quarantined = quarantine_clip_collisions(directory, "123", [100])
+            self.assertEqual(quarantined, [159])
+            self.assertFalse(os.path.exists(path))
+            self.assertTrue(os.path.exists(path + ".clip-collision"))
+
+    def test_clip_exclusion_boundary_is_retained(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "123_160.json")
+            with open(path, "w", encoding="utf-8") as file:
+                json.dump(
+                    {
+                        "target_offset": 160,
+                        "window_start": 155,
+                        "window_end": 190,
+                        "window_geometry": WINDOW_GEOMETRY_NAME,
+                        "window_geometry_version": WINDOW_GEOMETRY_VERSION,
+                    },
+                    file,
+                )
+            self.assertEqual(
+                quarantine_clip_collisions(directory, "123", [100]),
+                [],
+            )
+            self.assertTrue(os.path.exists(path))
+
+    def test_quarantined_collision_creates_top_up_shortfall(self):
+        self.assertEqual(
+            negative_shortfall(
+                target_count=4,
+                current_offsets={100, 200},
+                stale_offsets={300},
+            ),
+            1,
+        )
 
 
 if __name__ == "__main__":

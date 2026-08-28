@@ -101,6 +101,20 @@ def evaluate(labels, preds, threshold=0.5):
     }
 
 
+def evaluate_events(rows, indices, preds, threshold=0.5):
+    """Evaluate one maximum score/label per event group."""
+    groups = {}
+    for dataset_index, prediction in zip(indices, preds):
+        row = rows[int(dataset_index)]
+        group_id = str(row.get("event_group_id") or row.get("example_id"))
+        current = groups.setdefault(group_id, {"label": 0, "score": -float("inf")})
+        current["label"] = max(current["label"], int(row.get("label", 0)))
+        current["score"] = max(current["score"], float(prediction))
+    labels = np.asarray([group["label"] for group in groups.values()], dtype=np.float32)
+    scores = np.asarray([group["score"] for group in groups.values()], dtype=np.float32)
+    return evaluate(labels, scores, threshold=threshold)
+
+
 def format_metrics(m):
     c = m["confusion"]
     return (

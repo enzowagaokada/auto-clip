@@ -14,8 +14,9 @@ patterns I am not even aware of.
 The product exposes the threshold as **clipping sensitivity**. A strict sensitivity
 produces fewer, higher-confidence candidates; balanced and discovery sensitivities
 produce progressively more candidates for the user to review. When a candidate crosses
-the configured sensitivity threshold, the Go clipper can create a clip or send it to an
-approval queue.
+the configured sensitivity threshold, the Go clipper currently records it in shadow
+mode for human review. Automatic Create Clip behavior remains deferred until live
+acceptance is strong enough.
 
 This is intentionally a candidate-ranking system rather than a guarantee that every
 detection is worth clipping. Chat alone cannot always distinguish a meaningful
@@ -122,10 +123,12 @@ requirements.txt
 
 ## Project Roadmap / Phases
 
-**Current phase:** Phase 4/5 — Baseline Model and Generalization  
-**Current next step:** Rebuild the processed dataset, train with whole-VOD
-validation, then run streamer-held-out evaluations. See
-`docs/training_playbook.md`.
+**Current phase:** Remediation — data integrity, reproducible evaluation, and
+live-scoring measurement  
+**Current next step:** Clean up dataset/run reproducibility, collect representative
+hard negatives, and evaluate challengers against fresh untouched VODs and shadow
+episodes. See `docs/project_status.md` and
+`docs/overfitting_and_live_scoring_final_plan.md`.
 
 ### Phase 1 — Raw Data Collection
 
@@ -200,12 +203,11 @@ Implemented:
 
 Goal: prove the model works beyond one streamer.
 
-Planned:
+Partially implemented:
 
-- Run streamer-held-out validation.
-- Track metrics per streamer.
-- Tune `clip_threshold` per streamer.
-- Add calibration/suggestion mode for new streamers.
+- Whole-VOD validation and saved-threshold untouched-VOD evaluation are implemented.
+- Streamer-held-out validation, per-streamer metrics, and sensitivity calibration
+  remain planned.
 
 
 
@@ -213,12 +215,13 @@ Planned:
 
 Goal: make the model usable outside Python.
 
-Planned:
+Implemented:
 
 - Export the trained model to ONNX.
 - Verify ONNX output matches JAX output.
 - Export the vocabulary file alongside the model.
-- Build `training/inference/predict.py`.
+- Runtime inference is handled by the Go clipper; the old Python inference
+  script is not part of the deployment path.
 
 
 
@@ -226,7 +229,7 @@ Planned:
 
 Goal: use the trained ONNX model in a real-time Go clipper.
 
-Planned:
+Implemented in shadow mode:
 
 - Connect to live Twitch chat.
 - Maintain a rolling 35-second buffer and score the clip-start-equivalent target
@@ -234,6 +237,7 @@ at `now - 30s`.
 - Run ONNX inference every 2-3 seconds.
 - Log deduplicated candidates in shadow mode.
 - Respect cooldown and per-streamer thresholds.
+- Automatic clipping remains disabled.
 
 
 
@@ -377,6 +381,11 @@ label a viral moment as negative)
 Fetch the same 35-second chat window for each negative timestamp.
 
 Label these windows: **y = 0**
+
+On every rerun, revalidate stored negative anchors against the latest clip
+inventory. Newly discovered clips can invalidate an older negative; quarantine
+that file and top up the VOD. The dataset builder repeats this check and permits
+only an explicit durable `hard_negative` review to override proximity.
 
 ### Step 3 — Class Balance
 
@@ -546,8 +555,8 @@ probability = jax.nn.sigmoid(logits)
 
 - **ReLU** in hidden layers — introduces non-linearity, lets the model learn complex
 patterns, kills negative values (prevents vanishing gradients better than tanh)
-- **Sigmoid** on the output layer — squashes output to [0, 1] so it's a valid
-probability score
+- **Sigmoid** on the output layer — squashes the logit to a bounded [0, 1] score;
+  weighted BCE means it must not be interpreted as a calibrated probability
 
 ---
 
@@ -567,14 +576,15 @@ def weighted_bce_loss(params, model, x_tokens, x_features, y, key):
     loss = optax.sigmoid_binary_cross_entropy(logits, y)
     class_weights = 1.0 + y * (pos_weight - 1.0)
     weights = class_weights * sample_weight
-    return jnp.mean(loss * weights)
+    return jnp.sum(loss * weights) / jnp.maximum(jnp.sum(weights), 1e-8)
 ```
 
 Calculate `pos_weight` as negative/positive count from the training split only.
-`sample_weight` is `hard_negative_weight` (default 3.0) on reviewed
-`hard_negative` rows and 1.0 otherwise; it is applied only in the training
-step. Logit-space BCE is numerically stable and avoids clipping saturated
-probabilities.
+`sample_weight` combines the event-group base weight with
+`hard_negative_weight` (default 3.0) on reviewed `hard_negative` rows; it is
+applied only in the training step. Normalizing by total effective batch weight
+keeps gradient scale comparable across event-group compositions. Logit-space
+BCE is numerically stable and avoids clipping saturated probabilities.
 
 ---
 
@@ -851,7 +861,8 @@ removed and must not be used.
 - [x] GRU classifier implemented in Flax
 - [x] Weighted logit-space BCE loss implemented
 - [x] Training loop runs without NaN loss
-- [ ] F1 score > 0.75 on held-out validation set
+- [ ] Demonstrate untouched-VOD generalization and meet live acceptance /
+  episode-rate release gates
 - [ ] Streamer-held-out validation confirms the model generalizes to unseen channels
 - [ ] Strict/Balanced/Discovery sensitivity presets calibrated in shadow mode
 - [ ] Per-streamer sensitivity settings documented and loaded by the Go clipper

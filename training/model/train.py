@@ -23,6 +23,7 @@ from flax.training import train_state
 
 from architecture import ChatClassifier
 from data import (
+    DATASET_FILE,
     FEATURE_NAMES,
     iterate_batches,
     load_dataset_rows,
@@ -32,8 +33,15 @@ from data import (
     vod_group_split,
     vod_manifest_split,
 )
-from evaluate import evaluate, find_best_threshold, format_metrics
+from evaluate import evaluate, evaluate_events, find_best_threshold, format_metrics
 from loss import weighted_bce
+from run_manifest import (
+    RUN_MANIFEST_FILENAME,
+    build_run_manifest,
+    ensure_dataset_snapshot,
+    validate_dataset_identity,
+    write_run_manifest,
+)
 
 MODELS_DIR = "models/runs/window-v2-vod-seed0"
 
@@ -132,7 +140,11 @@ def main():
             "training window contract must be 35 seconds with a 30-second "
             "target lag ([clip start - 5s, clip start + 30s])"
         )
-    rows = load_dataset_rows()
+    rows = load_dataset_rows(DATASET_FILE)
+    validate_dataset_identity(rows)
+    snapshot_path, dataset_sha256 = ensure_dataset_snapshot(DATASET_FILE)
+    rows = load_dataset_rows(str(snapshot_path))
+    validate_dataset_identity(rows)
     for index, row in enumerate(rows):
         try:
             target = float(row["target_offset"])
@@ -188,19 +200,24 @@ def main():
     print(f"Examples: {num_examples} | {split_desc}")
     print(f"Train: {len(train_idx)}  Val: {len(val_idx)}")
 
+    base_sample_weights = np.asarray(
+        [float(row.get("base_sample_weight", 1.0)) for row in rows],
+        dtype=np.float32,
+    )
     configured_pos_weight = train_cfg.get("pos_weight", "auto")
     if str(configured_pos_weight).lower() == "auto":
         train_labels = labels[train_idx]
-        positives = int(np.sum(train_labels == 1))
-        negatives = int(np.sum(train_labels == 0))
-        if positives == 0:
+        train_base_weights = base_sample_weights[train_idx]
+        positives = float(np.sum(train_base_weights[train_labels == 1]))
+        negatives = float(np.sum(train_base_weights[train_labels == 0]))
+        if positives <= 0:
             raise ValueError("Training split has no positive examples.")
         pos_weight = negatives / positives
     else:
         pos_weight = float(configured_pos_weight)
 
     hard_negative_weight = float(train_cfg.get("hard_negative_weight", 1.0))
-    sample_weights = np.array(
+    hard_negative_multipliers = np.array(
         [
             hard_negative_weight
             if row.get("review_label") == "hard_negative"
@@ -209,6 +226,7 @@ def main():
         ],
         dtype=np.float32,
     )
+    sample_weights = base_sample_weights * hard_negative_multipliers
     train_hard_negatives = int(
         np.sum(
             [
@@ -258,6 +276,7 @@ def main():
     best_score = -float("inf")
     best_params = None
     best_metrics = None
+    best_event_metrics = None
     best_threshold = args.threshold if args.threshold is not None else 0.5
     best_epoch = 0
     epochs_without_improvement = 0
@@ -299,13 +318,28 @@ def main():
             threshold = args.threshold
             metrics = evaluate(val_labels, val_preds, threshold=threshold)
         train_metrics = evaluate(train_labels, train_preds, threshold=threshold)
+        train_event_metrics = evaluate_events(
+            rows,
+            train_idx,
+            train_preds,
+            threshold=threshold,
+        )
+        val_event_metrics = evaluate_events(
+            rows,
+            val_idx,
+            val_preds,
+            threshold=threshold,
+        )
         train_bce = binary_cross_entropy(train_logits, train_labels)
         val_bce = binary_cross_entropy(val_logits, val_labels)
 
         print(
             f"Epoch {epoch + 1:2d} | "
             f"train BCE={train_bce:.4f} {format_metrics(train_metrics)} | "
-            f"val BCE={val_bce:.4f} {format_metrics(metrics)} | t={threshold:.3f}"
+            f"val BCE={val_bce:.4f} {format_metrics(metrics)} | "
+            f"event train AP={train_event_metrics['average_precision']:.3f} "
+            f"val AP={val_event_metrics['average_precision']:.3f} | "
+            f"t={threshold:.3f}"
         )
 
         score = float(metrics.get(selection_metric, metrics["average_precision"]))
@@ -315,6 +349,7 @@ def main():
             best_score = score
             best_params = jax.device_get(state.params)
             best_metrics = metrics
+            best_event_metrics = val_event_metrics
             best_threshold = threshold
             best_epoch = epoch + 1
             epochs_without_improvement = 0
@@ -359,6 +394,7 @@ def main():
         "threshold": best_threshold,
         "best_epoch": best_epoch,
         "best_val_metrics": best_metrics,
+        "best_val_event_metrics": best_event_metrics,
         "selection_metric": selection_metric,
         "pos_weight": pos_weight,
         "hard_negative_weight": hard_negative_weight,
@@ -369,6 +405,8 @@ def main():
             else None
         ),
         "seed": args.seed,
+        "dataset_sha256": dataset_sha256,
+        "run_manifest": RUN_MANIFEST_FILENAME,
     }
     with open(
         os.path.join(args.output_dir, "inference_meta.json"),
@@ -377,11 +415,43 @@ def main():
     ) as f:
         json.dump(inference_meta, f, ensure_ascii=False, indent=2)
 
+    run_manifest = build_run_manifest(
+        rows=rows,
+        train_idx=train_idx,
+        val_idx=val_idx,
+        snapshot_path=snapshot_path,
+        dataset_sha256=dataset_sha256,
+        split_description=split_desc,
+        config={
+            "root_config": config,
+            "training_arguments": {
+                "holdout_streamer": args.holdout_streamer,
+                "holdout_vods": (
+                    os.path.normpath(args.holdout_vods)
+                    if args.holdout_vods
+                    else None
+                ),
+                "threshold": args.threshold,
+                "output_dir": os.path.normpath(args.output_dir),
+            },
+        },
+        seed=args.seed,
+    )
+    run_manifest["results"] = {
+        "best_epoch": best_epoch,
+        "threshold": best_threshold,
+        "window_metrics": best_metrics,
+        "event_metrics": best_event_metrics,
+        "selection_metric": selection_metric,
+    }
+    manifest_path = write_run_manifest(args.output_dir, run_manifest)
+
     print(
         f"\nBest epoch: {best_epoch} | threshold={best_threshold:.3f} | "
         f"{selection_metric}={best_score:.3f}"
     )
     print(f"Saved params -> {params_path}")
+    print(f"Saved run manifest -> {manifest_path}")
 
 
 if __name__ == "__main__":

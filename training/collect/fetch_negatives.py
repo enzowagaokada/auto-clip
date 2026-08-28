@@ -86,6 +86,32 @@ def existing_negative_offsets(output_dir, vod_id):
     return current, stale
 
 
+def quarantine_clip_collisions(output_dir, vod_id, clip_offsets):
+    """Quarantine stored negatives that are now too close to a known clip."""
+    quarantined = []
+    prefix = f"{vod_id}_"
+    suffix = ".json"
+    for name in sorted(os.listdir(output_dir)):
+        if not name.startswith(prefix) or not name.endswith(suffix):
+            continue
+        stem = name[len(prefix) : -len(suffix)]
+        try:
+            offset = int(stem)
+        except ValueError:
+            continue
+        if is_far_from_clips(offset, clip_offsets):
+            continue
+        source = os.path.join(output_dir, name)
+        destination = source + ".clip-collision"
+        if os.path.exists(destination):
+            raise FileExistsError(
+                f"Cannot quarantine {source}: destination already exists: {destination}"
+            )
+        os.replace(source, destination)
+        quarantined.append(offset)
+    return quarantined
+
+
 def is_far_from_clips(candidate_offset, clip_offsets):
     """Return True if the candidate is outside the exclusion buffer for every clip."""
     for clip_offset in clip_offsets:
@@ -93,6 +119,10 @@ def is_far_from_clips(candidate_offset, clip_offsets):
             return False
 
     return True
+
+
+def negative_shortfall(target_count, current_offsets, stale_offsets):
+    return max(0, target_count - len(current_offsets | stale_offsets))
 
 
 def sample_negative_offsets(vod_duration, clip_offsets, count, exclude_offsets=None):
@@ -187,16 +217,23 @@ def main():
     total_existing = 0
     total_target = 0
     total_shortfall = 0
+    total_clip_collisions = 0
 
     for (streamer_name, vod_id), group in grouped:
         clip_offsets = group["vod_offset"].astype(int).tolist()
         target_count = len(clip_offsets) * NEGATIVE_RATIO
+        quarantined_offsets = quarantine_clip_collisions(
+            output_dir,
+            vod_id,
+            clip_offsets,
+        )
+        total_clip_collisions += len(quarantined_offsets)
         current_offsets, stale_offsets = existing_negative_offsets(
             output_dir,
             vod_id,
         )
         existing_offsets = current_offsets | stale_offsets
-        need = max(0, target_count - len(existing_offsets))
+        need = negative_shortfall(target_count, current_offsets, stale_offsets)
 
         total_target += target_count
         total_existing += len(existing_offsets)
@@ -236,7 +273,8 @@ def main():
 
     print(
         f"Target={total_target} existing={total_existing} "
-        f"to_fetch={len(tasks)} undersampled={total_shortfall}"
+        f"to_fetch={len(tasks)} undersampled={total_shortfall} "
+        f"clip_collisions_quarantined={total_clip_collisions}"
     )
     if not tasks:
         print("Already at target ratio for every VOD. Nothing to fetch.")
@@ -279,6 +317,7 @@ def main():
     print(f"Saved negatives: {total_written}")
     print(f"Stale geometry refetched: {total_refetched}")
     print(f"Unavailable stale files quarantined: {total_quarantined}")
+    print(f"Clip-collision files quarantined: {total_clip_collisions}")
     print(f"No messages / Errors: {total_empty}")
     print(f"Already on disk before run: {total_existing}")
     print(f"Per-VOD target total: {total_target}")

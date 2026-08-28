@@ -30,6 +30,7 @@ VOCAB_FILENAME = "vocab.json"
 META_FILENAME = "inference_meta.json"
 PARAMS_FILENAME = "chat_classifier_params.msgpack"
 MANIFEST_FILENAME = "manifest.json"
+RUN_MANIFEST_FILENAME = "run_manifest.json"
 INPUT_NAMES = ("tokens", "features")
 OUTPUT_NAMES = ("logits",)
 
@@ -58,6 +59,16 @@ def validate_run_artifacts(run_dir):
 
     metadata = load_json(run_dir / META_FILENAME)
     vocab = load_json(run_dir / VOCAB_FILENAME)
+    declared_run_manifest = metadata.get("run_manifest")
+    if declared_run_manifest:
+        if declared_run_manifest != RUN_MANIFEST_FILENAME:
+            raise ValueError(
+                f"Unsupported run manifest filename: {declared_run_manifest!r}"
+            )
+        if not (run_dir / RUN_MANIFEST_FILENAME).is_file():
+            raise FileNotFoundError(
+                f"Run metadata requires missing {RUN_MANIFEST_FILENAME}."
+            )
     required_meta = (
         "vocab_size",
         "embed_dim",
@@ -321,6 +332,8 @@ def verify_manifest(export_dir, run_dir=None):
     if run_dir is not None:
         run_dir = Path(run_dir)
         expected_sources = {PARAMS_FILENAME, VOCAB_FILENAME, META_FILENAME}
+        if (run_dir / RUN_MANIFEST_FILENAME).is_file():
+            expected_sources.add(RUN_MANIFEST_FILENAME)
         source_checksums = manifest.get("source_artifacts")
         if not isinstance(source_checksums, dict) or set(source_checksums) != expected_sources:
             raise ValueError(

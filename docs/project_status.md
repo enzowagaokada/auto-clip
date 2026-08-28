@@ -1,6 +1,6 @@
 # Project Status (Living Doc)
 
-**Last updated:** 2026-08-21
+**Last updated:** 2026-08-27
 
 Agents and humans: read this first for current state and next actions.
 Deep methodology lives in `docs/twitch_classifier_brief.md`.
@@ -10,7 +10,7 @@ Training details live in `docs/training_playbook.md`.
 
 ## One-line status
 
-Harvest retrain `window-v2-harvest-seed0` finished: val AP **0.506** (better than live-hn 0.454, still below vod-seed0’s 0.545 on an easier in-community val split). Same epoch-1 overfit. Keep `window-v2-vod-seed0` live. Next: `analyze_run.py` on the harvest run, then optional FP review.
+Checkpoint 1 passed: 19 collection and 4 model tests passed; the cleaned 23,436-row dataset rebuilt twice with byte-identical hashes; and a fixed 60-VOD remediation validation split was created for dataset SHA-256 `270ba115...283be`. Checkpoint 2 live telemetry/episodes is next. Keep `window-v2-vod-seed0` live.
 
 ---
 
@@ -28,8 +28,8 @@ Harvest retrain `window-v2-harvest-seed0` finished: val AP **0.506** (better tha
 | Layer | Status |
 |---|---|
 | Data collection pipeline | Window-v2 refetch completed; unavailable legacy windows quarantined |
-| Dataset + temporal features | Post-harvest rebuild: 23,706 examples, 7,603 positive / 16,103 negative |
-| Train / evaluate / holdout / review loop | `window-v2-harvest-seed0` trained (val AP 0.506); `window-v2-vod-seed0` still the live bundle |
+| Dataset + temporal features | Clean deterministic rebuild verified: 23,436 rows; 19,969 event groups |
+| Train / evaluate / holdout / review loop | Checkpoint 1 passed; immutable run manifests + fixed 60-VOD remediation validation split ready |
 | Untouched-VOD evaluation | Harvest eval recorded for `window-v2-vod-seed0` (see below) |
 | Hard-negative sample weighting | Built: `training.hard_negative_weight: 3.0` on reviewed hard negatives |
 | ONNX export | Window-v2 bundle exported; 3,078-row parity passed with zero mismatches |
@@ -98,6 +98,27 @@ window-v2 quality evidence.
 - Validation AP: **0.506**
 
 Better than live-hn (AP 0.454) on a larger mixed-streamer split. Not a clear replacement for `window-v2-vod-seed0` (val AP 0.545) because that older val set had no Arky/Jynxzi/PBM. Same overfitting: train AP 0.508→0.833 while val AP 0.506→0.450. Harvest VODs are no longer an untouched test for this run.
+
+---
+
+## Window-v2 harvest FP follow-up (2026-08-24)
+
+- Run dir: `models/runs/window-v2-harvest-fp-seed0`
+- Purpose: false-positive-focused follow-up on the harvest training data
+- Dataset: **23,698** examples
+- Hard-negative 3× applied to **35** train rows
+- Best epoch: **2** (early-stopped after epoch 5)
+- Saved threshold: **0.430**
+- Validation AP: **0.502**
+- Validation AUC: **0.691**
+
+This did not beat `window-v2-harvest-seed0` (AP **0.506**, AUC **0.707**) and
+does not challenge the current `window-v2-vod-seed0` live bundle. Treat it as
+evidence that focusing on the existing false-positive set is insufficient by
+itself; future work should first improve data integrity, evaluation
+reproducibility, and live score measurement. See
+`docs/overfitting_and_live_scoring_newplan.md` for the preserved remediation
+plan.
 
 ---
 
@@ -221,23 +242,31 @@ Random AP baseline ≈ positive prevalence ≈ **0.33**. This is meaningfully be
 | `data/processed/dataset.jsonl` | Labeled windows |
 | `data/reviews/window_labels.csv` | Durable manual reviews |
 | `data/raw/chat_live/` | Geometry-v2 windows materialized from live shadow reviews |
-| `models/runs/window-v2-live-hn-seed0/` | Planned retrain after live-review import + hard-negative weighting |
+| `models/runs/window-v2-live-hn-seed0/` | Completed retrain after live-review import + hard-negative weighting |
 | `data/splits/vods_before_collection.txt` | Baseline VOD snapshot |
 | `data/splits/untouched_vods.txt` | New VODs used for the recorded untouched test |
 | `models/runs/reviewed-vod-seed0/` | Superseded legacy-geometry model |
 | `models/runs/reviewed-vod-seed0/analysis-untouched_vods/` | Untouched-test outputs |
-| `models/runs/window-v2-vod-seed0/` | Planned window-v2 trained run |
+| `models/runs/window-v2-vod-seed0/` | Current window-v2 live/shadow trained run |
 | `training/export/` | Direct ONNX export and parity tools |
-| `models/exports/window-v2-vod-seed0/` | Planned window-v2 deployment bundle |
+| `models/exports/window-v2-vod-seed0/` | Verified window-v2 deployment bundle |
 | `clipper/` | Standalone Go shadow clipper |
 | `data/live/shadow/window-v2/` | Window-v2 candidate/session/review logs (`candidates_review.jsonl` + `.csv`) |
 | `docs/live_clipper.md` | Setup, verification, replay, and live runbook |
 | `docs/training_playbook.md` | How to train / interpret metrics |
 | `docs/twitch_classifier_brief.md` | Full product/ML brief |
+| `docs/overfitting_and_live_scoring_final_plan.md` | Prioritized remediation checkpoints and release gates |
 
 ---
 
 ## Next steps (ordered)
+
+The active roadmap is `docs/overfitting_and_live_scoring_final_plan.md`.
+Implement and verify one checkpoint at a time. Checkpoint 1 code is complete but
+Checkpoint 1 passed on 2026-08-27. Its 19 collection tests, 4 model tests,
+two-build deterministic hash checks, and fixed 60-VOD remediation manifest were
+verified. Start Checkpoint 2 live telemetry/episode implementation next; do not
+retrain yet.
 
 ### 1. Complete window-v2 migration (do this next)
 
@@ -279,10 +308,18 @@ python training/model/train.py --output-dir models/runs/window-v2-live-hn-seed0
 ### 2. Improve model after this shadow readout
 
 - [x] Add never-trained live streamers (arky/jynxzi) into collection when ready for broader coverage
-- [x] After the live-hn retrain, run a **new** untouched VOD eval that excludes imported live VODs
+- [ ] After the live-hn retrain, run a **new** untouched VOD eval that excludes imported live VODs
 - [x] Retrain a **new** run dir on the harvest dataset (keep `window-v2-vod-seed0` as the live bundle until the new run beats it)
-- [ ] `python training/model/analyze_run.py --run-dir models/runs/window-v2-harvest-seed0` then optional top-FP review
+- [x] `python training/model/analyze_run.py --run-dir models/runs/window-v2-harvest-seed0` then optional top-FP review
+- [x] Run the FP-focused follow-up `window-v2-harvest-fp-seed0`; it did not improve over the harvest baseline
 - [ ] After that retrain, snapshot VODs first, then collect a **new** untouched set before any later retrain
+
+The final prioritized methodology is in
+`docs/overfitting_and_live_scoring_final_plan.md`: evidence-first dataset
+cleanup, reproducible snapshots/run manifests, representative live
+telemetry/episodes, active hard-negative collection, fixed-split ablations, and
+explicit shadow release gates. The two earlier plan documents remain historical
+context.
 
 ### 3. Shadow review linking (partial now / auto later)
 
