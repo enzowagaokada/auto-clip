@@ -140,6 +140,13 @@ violation enters without an explicit review override, or repeated builds differ.
 **Priority:** Very high. This must precede conclusions about live score
 compression.
 
+**Status (implemented, verification pending):** Schema-v1 per-inference
+telemetry, finalized triggered episodes, bounded below-threshold local maxima,
+episode review companions, and deterministic threshold replay/analyzer code
+are implemented on `1-checkpoint-2-live-telemetry`. The user-owned Go/Python
+tests and synthetic/replay verification must pass before this checkpoint is
+recorded as complete or new collection starts.
+
 The current Go clipper records only the first threshold-crossing score. Scores
 therefore naturally cluster near the threshold and cannot establish whether
 underlying live ranking has collapsed.

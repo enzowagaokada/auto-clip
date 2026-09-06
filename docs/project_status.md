@@ -1,6 +1,6 @@
 # Project Status (Living Doc)
 
-**Last updated:** 2026-08-27
+**Last updated:** 2026-08-29
 
 Agents and humans: read this first for current state and next actions.
 Deep methodology lives in `docs/twitch_classifier_brief.md`.
@@ -10,7 +10,7 @@ Training details live in `docs/training_playbook.md`.
 
 ## One-line status
 
-Checkpoint 1 passed: 19 collection and 4 model tests passed; the cleaned 23,436-row dataset rebuilt twice with byte-identical hashes; and a fixed 60-VOD remediation validation split was created for dataset SHA-256 `270ba115...283be`. Checkpoint 2 live telemetry/episodes is next. Keep `window-v2-vod-seed0` live.
+Checkpoint 2 live telemetry/episodes is implemented on `1-checkpoint-2-live-telemetry` but awaits user-run verification. It adds schema-v1 inference telemetry, finalized peak episodes, bounded below-threshold local maxima, and threshold replay analysis. Keep `window-v2-vod-seed0` live and do not collect new Checkpoint 3 sessions until the Checkpoint 2 gate passes.
 
 ---
 
@@ -33,7 +33,7 @@ Checkpoint 1 passed: 19 collection and 4 model tests passed; the cleaned 23,436-
 | Untouched-VOD evaluation | Harvest eval recorded for `window-v2-vod-seed0` (see below) |
 | Hard-negative sample weighting | Built: `training.hard_negative_weight: 3.0` on reviewed hard negatives |
 | ONNX export | Window-v2 bundle exported; 3,078-row parity passed with zero mismatches |
-| Go live clipper | Window-v2 unit/race tests, build, replay, and authenticated shadow passed |
+| Go live clipper | Checkpoint 2 telemetry/episode code implemented; user-run tests/replay pending |
 | Shadow-mode acceptance tracking | ~100/198 window-v2 candidates labeled; first acceptance readout below |
 | Paid product / UI | Later |
 
@@ -71,6 +71,21 @@ Logs: `data/live/shadow/window-v2/`. Threshold: **0.480**.
 - Common hard-negative themes in reasons: WW/gift spam, stream start, empty mix, emote-only
 
 First Jason smoke still only proves transport. Do not mix with legacy five-second-lag logs.
+
+## Checkpoint 2 live measurement (implemented 2026-08-29; unverified)
+
+- Every successful live inference now appends one schema-v1 lightweight row to
+  `telemetry.jsonl`; full chat is not duplicated there.
+- Existing immediate candidate files remain unchanged. Triggered episodes retain
+  the highest-score full window and close after two below-threshold ticks, 60
+  seconds, or session close.
+- Deterministic below-threshold local maxima are retained separately, capped at
+  five per useful-hour bucket.
+- `training/live/analyze_telemetry.py` replays configurable thresholds/cooldowns
+  and reports volume, reviewed acceptance support, peak-score AUC, bootstrap
+  intervals, per-streamer results, and dropped-chat rates.
+- Do not treat implementation as passed until the user reports the prescribed
+  Go/Python tests and replay/synthetic checks.
 
 ## Legacy live shadow smoke
 
@@ -265,8 +280,9 @@ The active roadmap is `docs/overfitting_and_live_scoring_final_plan.md`.
 Implement and verify one checkpoint at a time. Checkpoint 1 code is complete but
 Checkpoint 1 passed on 2026-08-27. Its 19 collection tests, 4 model tests,
 two-build deterministic hash checks, and fixed 60-VOD remediation manifest were
-verified. Start Checkpoint 2 live telemetry/episode implementation next; do not
-retrain yet.
+verified. Checkpoint 2 implementation is complete but not yet passed. Run the
+documented Go and Python tests plus synthetic/replay verification; do not
+retrain or start Checkpoint 3 collection yet.
 
 ### 1. Complete window-v2 migration (do this next)
 

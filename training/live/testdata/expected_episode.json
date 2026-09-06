@@ -1,0 +1,6 @@
+{
+  "episode_count": 1,
+  "onset_score": 0.51,
+  "peak_score": 0.9,
+  "close_reason": "consecutive_below_threshold"
+}

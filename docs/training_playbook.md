@@ -155,6 +155,36 @@ were imported — are no longer an unbiased test set.
 The analyzer preserves an existing `false_positive_review.csv` by default. Pass
 `--overwrite-review` only when intentionally discarding completed review work.
 
+## Analyze live telemetry and episodes
+
+Checkpoint 2 records every successful inference in schema-v1
+`data/live/shadow/window-v2/telemetry.jsonl` and writes finalized peak windows
+to `episodes.jsonl`. Immediate candidate logs remain for compatibility, but
+candidate onset-score distributions must not be used to diagnose score
+compression.
+
+Replay configured cooldown/rearm behavior at one or more thresholds:
+
+```powershell
+python training/live/analyze_telemetry.py --thresholds 0.48,0.52,0.56
+```
+
+By default the analyzer reads global and per-streamer cooldowns from
+`config.yaml`. CLI cooldown overrides are available for controlled sensitivity
+experiments. The output reports useful streamer-hours, episodes/hour, score
+distributions, reviewed peak-score AUC, decided acceptance with bootstrap
+intervals, and per-streamer dropped-chat rates.
+
+Volume can be estimated at any replayed threshold. Acceptance is left null when
+the reviewed peak windows do not represent the alternative score range. In
+particular, lower-threshold acceptance requires reviewed
+`record_type=local_maximum` rows in that range.
+
+Fill labels only in `episodes_review.csv`; do not edit telemetry or episode
+JSONL. The current `import_live_reviews.py` still imports the legacy-compatible
+candidate review files. Episode peak-window import belongs to Checkpoint 3 and
+must not be assumed until that importer is explicitly extended and verified.
+
 ## One-time untouched VOD test
 
 An untouched test must evaluate an already-trained model at its already-selected

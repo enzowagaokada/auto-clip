@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 )
@@ -28,6 +29,67 @@ type Candidate struct {
 	RawFeatures        []float32 `json:"raw_features"`
 	ScaledFeatures     []float32 `json:"scaled_features"`
 	Messages           []Message `json:"messages"`
+}
+
+const LiveSchemaVersion = 1
+
+type InferenceTelemetry struct {
+	SchemaVersion         int       `json:"schema_version"`
+	SessionID             string    `json:"session_id"`
+	Streamer              string    `json:"streamer"`
+	BroadcasterID         string    `json:"broadcaster_id,omitempty"`
+	StreamID              string    `json:"stream_id,omitempty"`
+	ManifestSHA256        string    `json:"model_manifest_sha256"`
+	InferenceAt           time.Time `json:"inference_at"`
+	TargetAt              time.Time `json:"target_at"`
+	Score                 float32   `json:"score"`
+	Threshold             float32   `json:"threshold"`
+	Crossed               bool      `json:"crossed"`
+	Triggered             bool      `json:"triggered"`
+	AboveThreshold        bool      `json:"above_threshold"`
+	Armed                 bool      `json:"armed"`
+	InCooldown            bool      `json:"in_cooldown"`
+	CooldownUntil         time.Time `json:"cooldown_until,omitempty"`
+	RawFeatures           []float32 `json:"raw_features"`
+	CumulativeDroppedChat uint64    `json:"cumulative_dropped_chat"`
+}
+
+type Episode struct {
+	SchemaVersion    int       `json:"schema_version"`
+	EpisodeID        string    `json:"episode_id"`
+	RecordType       string    `json:"record_type"`
+	SessionID        string    `json:"session_id"`
+	Streamer         string    `json:"streamer"`
+	BroadcasterID    string    `json:"broadcaster_id,omitempty"`
+	StreamID         string    `json:"stream_id,omitempty"`
+	ManifestSHA256   string    `json:"model_manifest_sha256"`
+	OnsetAt          time.Time `json:"onset_at"`
+	OnsetScore       float32   `json:"onset_score"`
+	PeakAt           time.Time `json:"peak_at"`
+	PeakTargetAt     time.Time `json:"peak_target_at"`
+	PeakWindowStart  time.Time `json:"peak_window_start"`
+	PeakWindowEnd    time.Time `json:"peak_window_end"`
+	PeakStreamOffset float64   `json:"peak_stream_offset_seconds"`
+	PeakScore        float32   `json:"peak_score"`
+	ClosedAt         time.Time `json:"closed_at"`
+	DurationSeconds  float64   `json:"duration_seconds"`
+	MinimumScore     float32   `json:"minimum_score"`
+	MaximumScore     float32   `json:"maximum_score"`
+	Threshold        float32   `json:"threshold"`
+	CloseReason      string    `json:"close_reason"`
+	RawFeatures      []float32 `json:"raw_features"`
+	ScaledFeatures   []float32 `json:"scaled_features"`
+	Messages         []Message `json:"messages"`
+}
+
+type EpisodeReview struct {
+	EpisodeID         string  `json:"episode_id"`
+	RecordType        string  `json:"record_type"`
+	SessionID         string  `json:"session_id"`
+	Streamer          string  `json:"streamer"`
+	OnsetScore        float32 `json:"onset_score"`
+	PeakScore         float32 `json:"peak_score"`
+	StreamOffsetStamp string  `json:"stream_offset_stamp"`
 }
 
 // CandidateReview is the scrollable companion log written beside the full
@@ -60,6 +122,10 @@ type SessionCounters struct {
 	InferencesRun   uint64    `json:"inferences_run"`
 	CandidatesFound uint64    `json:"candidates_found"`
 	InferenceErrors uint64    `json:"inference_errors"`
+	EpisodesFound   uint64    `json:"episodes_found"`
+	LocalPeaksFound uint64    `json:"local_peaks_found"`
+	DroppedChat     uint64    `json:"dropped_chat"`
+	UsefulSeconds   float64   `json:"useful_seconds"`
 }
 
 var reviewCSVHeader = []string{
@@ -72,42 +138,93 @@ var reviewCSVHeader = []string{
 	"reason",
 }
 
-type JSONL struct {
-	mu         sync.Mutex
-	candidates *os.File
-	sessions   *os.File
-	reviews    *os.File
-	reviewCSV  *os.File
+var episodeReviewCSVHeader = []string{
+	"episode_id",
+	"record_type",
+	"session_id",
+	"streamer",
+	"onset_score",
+	"peak_score",
+	"stream_offset_stamp",
+	"review_label",
+	"reason",
 }
 
-func Open(candidatePath, sessionPath, reviewPath, reviewCSVPath string) (*JSONL, error) {
-	candidates, err := openAppend(candidatePath)
+type JSONL struct {
+	mu               sync.Mutex
+	candidates       *os.File
+	sessions         *os.File
+	reviews          *os.File
+	reviewCSV        *os.File
+	telemetry        *os.File
+	episodes         *os.File
+	episodeReviews   *os.File
+	episodeReviewCSV *os.File
+}
+
+type Paths struct {
+	Candidates         string
+	Sessions           string
+	CandidateReviews   string
+	CandidateReviewCSV string
+	Telemetry          string
+	Episodes           string
+	EpisodeReviews     string
+	EpisodeReviewCSV   string
+}
+
+func Open(paths Paths) (*JSONL, error) {
+	candidates, err := openAppend(paths.Candidates)
 	if err != nil {
 		return nil, fmt.Errorf("open candidates JSONL: %w", err)
 	}
-	sessions, err := openAppend(sessionPath)
+	sessions, err := openAppend(paths.Sessions)
 	if err != nil {
 		_ = candidates.Close()
 		return nil, fmt.Errorf("open sessions JSONL: %w", err)
 	}
-	reviews, err := openAppend(reviewPath)
+	reviews, err := openAppend(paths.CandidateReviews)
 	if err != nil {
 		_ = candidates.Close()
 		_ = sessions.Close()
 		return nil, fmt.Errorf("open candidates review JSONL: %w", err)
 	}
-	reviewCSV, err := openReviewCSV(reviewCSVPath)
+	reviewCSV, err := openCSV(paths.CandidateReviewCSV, reviewCSVHeader)
 	if err != nil {
 		_ = candidates.Close()
 		_ = sessions.Close()
 		_ = reviews.Close()
 		return nil, fmt.Errorf("open candidates review CSV: %w", err)
 	}
+	telemetry, err := openAppend(paths.Telemetry)
+	if err != nil {
+		closeFiles(candidates, sessions, reviews, reviewCSV)
+		return nil, fmt.Errorf("open telemetry JSONL: %w", err)
+	}
+	episodes, err := openAppend(paths.Episodes)
+	if err != nil {
+		closeFiles(candidates, sessions, reviews, reviewCSV, telemetry)
+		return nil, fmt.Errorf("open episodes JSONL: %w", err)
+	}
+	episodeReviews, err := openAppend(paths.EpisodeReviews)
+	if err != nil {
+		closeFiles(candidates, sessions, reviews, reviewCSV, telemetry, episodes)
+		return nil, fmt.Errorf("open episode reviews JSONL: %w", err)
+	}
+	episodeReviewCSV, err := openCSV(paths.EpisodeReviewCSV, episodeReviewCSVHeader)
+	if err != nil {
+		closeFiles(candidates, sessions, reviews, reviewCSV, telemetry, episodes, episodeReviews)
+		return nil, fmt.Errorf("open episode reviews CSV: %w", err)
+	}
 	return &JSONL{
-		candidates: candidates,
-		sessions:   sessions,
-		reviews:    reviews,
-		reviewCSV:  reviewCSV,
+		candidates:       candidates,
+		sessions:         sessions,
+		reviews:          reviews,
+		reviewCSV:        reviewCSV,
+		telemetry:        telemetry,
+		episodes:         episodes,
+		episodeReviews:   episodeReviews,
+		episodeReviewCSV: episodeReviewCSV,
 	}, nil
 }
 
@@ -118,7 +235,7 @@ func openAppend(path string) (*os.File, error) {
 	return os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 }
 
-func openReviewCSV(path string) (*os.File, error) {
+func openCSV(path string, header []string) (*os.File, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
@@ -133,7 +250,7 @@ func openReviewCSV(path string) (*os.File, error) {
 	}
 	if info.Size() == 0 {
 		writer := csv.NewWriter(file)
-		if err := writer.Write(reviewCSVHeader); err != nil {
+		if err := writer.Write(header); err != nil {
 			_ = file.Close()
 			return nil, err
 		}
@@ -145,6 +262,20 @@ func openReviewCSV(path string) (*os.File, error) {
 		if err := file.Sync(); err != nil {
 			_ = file.Close()
 			return nil, err
+		}
+	} else {
+		if _, err := file.Seek(0, 0); err != nil {
+			_ = file.Close()
+			return nil, err
+		}
+		existing, err := csv.NewReader(file).Read()
+		if err != nil {
+			_ = file.Close()
+			return nil, fmt.Errorf("read existing CSV header: %w", err)
+		}
+		if !slices.Equal(existing, header) {
+			_ = file.Close()
+			return nil, fmt.Errorf("existing CSV header %v does not match schema %v", existing, header)
 		}
 	}
 	if _, err := file.Seek(0, 2); err != nil {
@@ -181,6 +312,36 @@ func (s *JSONL) AppendSession(counters SessionCounters) error {
 	return appendAndSync(s.sessions, counters)
 }
 
+func (s *JSONL) AppendTelemetry(telemetry InferenceTelemetry) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if telemetry.SchemaVersion != LiveSchemaVersion {
+		return fmt.Errorf("telemetry schema_version must be %d", LiveSchemaVersion)
+	}
+	return appendAndSync(s.telemetry, telemetry)
+}
+
+func (s *JSONL) AppendEpisode(episode Episode) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if episode.SchemaVersion != LiveSchemaVersion {
+		return fmt.Errorf("episode schema_version must be %d", LiveSchemaVersion)
+	}
+	if err := appendAndSync(s.episodes, episode); err != nil {
+		return err
+	}
+	review := EpisodeReview{
+		EpisodeID: episode.EpisodeID, RecordType: episode.RecordType,
+		SessionID: episode.SessionID, Streamer: episode.Streamer,
+		OnsetScore: episode.OnsetScore, PeakScore: episode.PeakScore,
+		StreamOffsetStamp: StreamOffsetStamp(episode.PeakStreamOffset),
+	}
+	if err := appendAndSync(s.episodeReviews, review); err != nil {
+		return err
+	}
+	return appendEpisodeReviewCSV(s.episodeReviewCSV, review)
+}
+
 func appendAndSync(file *os.File, value any) error {
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -213,6 +374,28 @@ func appendReviewCSV(file *os.File, review CandidateReview) error {
 	return file.Sync()
 }
 
+func appendEpisodeReviewCSV(file *os.File, review EpisodeReview) error {
+	writer := csv.NewWriter(file)
+	if err := writer.Write([]string{
+		review.EpisodeID,
+		review.RecordType,
+		review.SessionID,
+		review.Streamer,
+		fmt.Sprintf("%.8g", review.OnsetScore),
+		fmt.Sprintf("%.8g", review.PeakScore),
+		review.StreamOffsetStamp,
+		"",
+		"",
+	}); err != nil {
+		return err
+	}
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		return err
+	}
+	return file.Sync()
+}
+
 func (s *JSONL) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -220,6 +403,10 @@ func (s *JSONL) Close() error {
 	second := s.sessions.Close()
 	third := s.reviews.Close()
 	fourth := s.reviewCSV.Close()
+	fifth := s.telemetry.Close()
+	sixth := s.episodes.Close()
+	seventh := s.episodeReviews.Close()
+	eighth := s.episodeReviewCSV.Close()
 	if first != nil {
 		return first
 	}
@@ -229,7 +416,27 @@ func (s *JSONL) Close() error {
 	if third != nil {
 		return third
 	}
-	return fourth
+	if fourth != nil {
+		return fourth
+	}
+	if fifth != nil {
+		return fifth
+	}
+	if sixth != nil {
+		return sixth
+	}
+	if seventh != nil {
+		return seventh
+	}
+	return eighth
+}
+
+func closeFiles(files ...*os.File) {
+	for _, file := range files {
+		if file != nil {
+			_ = file.Close()
+		}
+	}
 }
 
 // StreamOffsetStamp formats a stream offset for Twitch seek boxes / URLs.

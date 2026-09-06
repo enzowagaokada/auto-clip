@@ -20,6 +20,9 @@ func (s fixedScorer) Score(preprocess.Encoded) (float32, error) {
 
 type memoryRecorder struct {
 	candidate *store.Candidate
+	telemetry []store.InferenceTelemetry
+	episodes  []store.Episode
+	session   *store.SessionCounters
 }
 
 func (r *memoryRecorder) AppendCandidate(candidate store.Candidate) error {
@@ -27,7 +30,18 @@ func (r *memoryRecorder) AppendCandidate(candidate store.Candidate) error {
 	return nil
 }
 
-func (*memoryRecorder) AppendSession(store.SessionCounters) error {
+func (r *memoryRecorder) AppendSession(counters store.SessionCounters) error {
+	r.session = &counters
+	return nil
+}
+
+func (r *memoryRecorder) AppendTelemetry(row store.InferenceTelemetry) error {
+	r.telemetry = append(r.telemetry, row)
+	return nil
+}
+
+func (r *memoryRecorder) AppendEpisode(row store.Episode) error {
+	r.episodes = append(r.episodes, row)
 	return nil
 }
 
@@ -64,12 +78,15 @@ func TestEvaluateUsesThirtySecondTargetLag(t *testing.T) {
 	recorder := &memoryRecorder{}
 	streamStarted := time.Unix(1_000, 0).UTC()
 	session, err := NewSession(Options{
-		Streamer:      "example",
-		StreamID:      "stream",
-		StreamStarted: streamStarted,
-		ObservedAt:    streamStarted,
-		Window:        35 * time.Second,
-		TargetLag:     30 * time.Second,
+		Streamer:               "example",
+		StreamID:               "stream",
+		StreamStarted:          streamStarted,
+		ObservedAt:             streamStarted,
+		Window:                 35 * time.Second,
+		TargetLag:              30 * time.Second,
+		EpisodeCloseBelowTicks: 2,
+		EpisodeMaxDuration:     60 * time.Second,
+		LocalPeaksPerHour:      5,
 	}, encoder, fixedScorer{score: 0.75}, machine, recorder)
 	if err != nil {
 		t.Fatal(err)
@@ -86,7 +103,7 @@ func TestEvaluateUsesThirtySecondTargetLag(t *testing.T) {
 		}
 	}
 
-	evaluation, err := session.EvaluateDetailed(at)
+	evaluation, err := session.EvaluateDetailedWithDropped(at, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,5 +122,11 @@ func TestEvaluateUsesThirtySecondTargetLag(t *testing.T) {
 	}
 	if evaluation.Candidate.MessageCount != 2 {
 		t.Fatalf("MessageCount = %d, want 2", evaluation.Candidate.MessageCount)
+	}
+	if len(recorder.telemetry) != 1 ||
+		recorder.telemetry[0].SchemaVersion != store.LiveSchemaVersion ||
+		len(recorder.telemetry[0].RawFeatures) != len(modelmeta.FeatureNames) ||
+		recorder.telemetry[0].CumulativeDroppedChat != 3 {
+		t.Fatalf("telemetry = %#v", recorder.telemetry)
 	}
 }

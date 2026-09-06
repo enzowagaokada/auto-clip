@@ -43,6 +43,11 @@ clipper:
 	if cfg.Clipper.CandidatesReviewCSVPath != "data/live/shadow/window-v2/candidates_review.csv" {
 		t.Fatalf("candidates_review_csv_path = %q", cfg.Clipper.CandidatesReviewCSVPath)
 	}
+	if cfg.Clipper.TelemetryPath != "data/live/shadow/window-v2/telemetry.jsonl" ||
+		cfg.Clipper.EpisodesPath != "data/live/shadow/window-v2/episodes.jsonl" {
+		t.Fatalf("telemetry/episode defaults = %q / %q",
+			cfg.Clipper.TelemetryPath, cfg.Clipper.EpisodesPath)
+	}
 }
 
 func TestValidateRejectsChangedLiveParity(t *testing.T) {
@@ -60,5 +65,19 @@ func TestValidateRejectsNonShadowMode(t *testing.T) {
 	cfg.Clipper.Mode = "live"
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate() error = nil, want shadow-only mode error")
+	}
+}
+
+func TestValidateRejectsChangedEpisodeContract(t *testing.T) {
+	cfg := Defaults(t.TempDir())
+	cfg.Twitch.Streamers = []Streamer{{Name: "example", BroadcasterID: "123", Active: true}}
+	cfg.Clipper.EpisodeCloseBelowTicks = 1
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() error = nil, want fixed episode closure error")
+	}
+	cfg.Clipper.EpisodeCloseBelowTicks = 2
+	cfg.Clipper.LocalPeaksPerHour = 6
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() error = nil, want local peak cap error")
 	}
 }
