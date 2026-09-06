@@ -7,11 +7,14 @@ import (
 )
 
 type Decision struct {
-	Triggered     bool
-	Crossed       bool
-	Score         float32
-	Threshold     float32
-	CooldownUntil time.Time
+	Triggered      bool
+	Crossed        bool
+	Score          float32
+	Threshold      float32
+	CooldownUntil  time.Time
+	AboveThreshold bool
+	Armed          bool
+	InCooldown     bool
 }
 
 // Machine emits only on a below-to-at/above threshold crossing. A trigger
@@ -52,11 +55,14 @@ func (m *Machine) Observe(at time.Time, score float32) Decision {
 	}
 	m.above = isAbove
 	return Decision{
-		Triggered:     triggered,
-		Crossed:       crossed,
-		Score:         score,
-		Threshold:     m.threshold,
-		CooldownUntil: m.cooldownUntil,
+		Triggered:      triggered,
+		Crossed:        crossed,
+		Score:          score,
+		Threshold:      m.threshold,
+		CooldownUntil:  m.cooldownUntil,
+		AboveThreshold: isAbove,
+		Armed:          m.armed,
+		InCooldown:     at.Before(m.cooldownUntil),
 	}
 }
 

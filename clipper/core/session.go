@@ -21,17 +21,22 @@ type Scorer interface {
 type Recorder interface {
 	AppendCandidate(store.Candidate) error
 	AppendSession(store.SessionCounters) error
+	AppendTelemetry(store.InferenceTelemetry) error
+	AppendEpisode(store.Episode) error
 }
 
 type Options struct {
-	Streamer       string
-	BroadcasterID  string
-	StreamID       string
-	StreamStarted  time.Time
-	ObservedAt     time.Time
-	Window         time.Duration
-	TargetLag      time.Duration
-	ManifestSHA256 string
+	Streamer               string
+	BroadcasterID          string
+	StreamID               string
+	StreamStarted          time.Time
+	ObservedAt             time.Time
+	Window                 time.Duration
+	TargetLag              time.Duration
+	ManifestSHA256         string
+	EpisodeCloseBelowTicks int
+	EpisodeMaxDuration     time.Duration
+	LocalPeaksPerHour      int
 }
 
 type Evaluation struct {
@@ -53,6 +58,7 @@ type Session struct {
 	scorer   Scorer
 	machine  *detection.Machine
 	recorder Recorder
+	episodes *episodeTracker
 	counters store.SessionCounters
 	closed   bool
 }
@@ -68,6 +74,10 @@ func NewSession(options Options, encoder *preprocess.Encoder, scorer Scorer,
 	if options.TargetLag < 0 || options.TargetLag >= options.Window {
 		return nil, errors.New("target lag must be in [0, window duration)")
 	}
+	if options.EpisodeCloseBelowTicks <= 0 || options.EpisodeMaxDuration <= 0 ||
+		options.LocalPeaksPerHour <= 0 || options.LocalPeaksPerHour > 5 {
+		return nil, errors.New("episode closure and local-maximum settings are invalid")
+	}
 	if encoder == nil || scorer == nil || machine == nil || recorder == nil {
 		return nil, errors.New("encoder, scorer, state machine, and recorder are required")
 	}
@@ -79,7 +89,7 @@ func NewSession(options Options, encoder *preprocess.Encoder, scorer Scorer,
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	return &Session{
+	session := &Session{
 		options:  options,
 		id:       id,
 		started:  now,
@@ -93,7 +103,9 @@ func NewSession(options Options, encoder *preprocess.Encoder, scorer Scorer,
 			BroadcasterID: options.BroadcasterID, StreamID: options.StreamID,
 			StreamStartedAt: options.StreamStarted.UTC(), StartedAt: now,
 		},
-	}, nil
+	}
+	session.episodes = newEpisodeTracker(options, id, recorder)
+	return session, nil
 }
 
 func (s *Session) ID() string { return s.id }
@@ -126,6 +138,13 @@ func (s *Session) Evaluate(at time.Time) (*store.Candidate, error) {
 }
 
 func (s *Session) EvaluateDetailed(at time.Time) (Evaluation, error) {
+	return s.EvaluateDetailedWithDropped(at, 0)
+}
+
+func (s *Session) EvaluateDetailedWithDropped(
+	at time.Time,
+	cumulativeDroppedChat uint64,
+) (Evaluation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -154,16 +173,26 @@ func (s *Session) EvaluateDetailed(at time.Time) (Evaluation, error) {
 		return Evaluation{}, err
 	}
 	decision := s.machine.Observe(at, score)
+	s.counters.DroppedChat = cumulativeDroppedChat
 	evaluation := Evaluation{
 		At: at.UTC(), TargetAt: targetAt.UTC(), Score: score,
 		Threshold: decision.Threshold, Triggered: decision.Triggered,
 	}
-	if !decision.Triggered {
-		return evaluation, nil
+	telemetry := store.InferenceTelemetry{
+		SchemaVersion: store.LiveSchemaVersion,
+		SessionID:     s.id, Streamer: s.options.Streamer,
+		BroadcasterID: s.options.BroadcasterID, StreamID: s.options.StreamID,
+		ManifestSHA256: s.options.ManifestSHA256,
+		InferenceAt:    at.UTC(), TargetAt: targetAt.UTC(),
+		Score: score, Threshold: decision.Threshold,
+		Crossed: decision.Crossed, Triggered: decision.Triggered,
+		AboveThreshold: decision.AboveThreshold, Armed: decision.Armed,
+		InCooldown: decision.InCooldown, CooldownUntil: decision.CooldownUntil.UTC(),
+		RawFeatures:           append([]float32(nil), encoded.RawFeatures...),
+		CumulativeDroppedChat: cumulativeDroppedChat,
 	}
-	candidateID, err := newID()
-	if err != nil {
-		return Evaluation{}, err
+	if err := s.recorder.AppendTelemetry(telemetry); err != nil {
+		return Evaluation{}, fmt.Errorf("persist inference telemetry: %w", err)
 	}
 	rawMessages := make([]store.Message, len(messages))
 	for i, message := range messages {
@@ -171,27 +200,50 @@ func (s *Session) EvaluateDetailed(at time.Time) (Evaluation, error) {
 			Time: message.Time.UTC(), User: message.User, Text: message.Text,
 		}
 	}
-	candidate := store.Candidate{
-		SessionID: s.id, CandidateID: candidateID,
-		Streamer: s.options.Streamer, BroadcasterID: s.options.BroadcasterID,
-		StreamID:   s.options.StreamID,
-		DetectedAt: at.UTC(), StreamOffsetSecond: streamOffset,
-		TargetAt: targetAt.UTC(),
-		Score:    score, Threshold: decision.Threshold, MessageCount: len(messages),
-		UniqueUsers:    int(encoded.RawFeatures[1]),
-		ManifestSHA256: s.options.ManifestSHA256,
-		RawFeatures:    append([]float32(nil), encoded.RawFeatures...),
-		ScaledFeatures: append([]float32(nil), encoded.Features...),
-		Messages:       rawMessages,
+	if decision.Triggered {
+		candidateID, err := newID()
+		if err != nil {
+			return Evaluation{}, err
+		}
+		candidate := store.Candidate{
+			SessionID: s.id, CandidateID: candidateID,
+			Streamer: s.options.Streamer, BroadcasterID: s.options.BroadcasterID,
+			StreamID:   s.options.StreamID,
+			DetectedAt: at.UTC(), StreamOffsetSecond: streamOffset,
+			TargetAt: targetAt.UTC(),
+			Score:    score, Threshold: decision.Threshold, MessageCount: len(messages),
+			UniqueUsers:    int(encoded.RawFeatures[1]),
+			ManifestSHA256: s.options.ManifestSHA256,
+			RawFeatures:    append([]float32(nil), encoded.RawFeatures...),
+			ScaledFeatures: append([]float32(nil), encoded.Features...),
+			Messages:       rawMessages,
+		}
+		if err := s.recorder.AppendCandidate(candidate); err != nil {
+			// Persistence is part of the trigger contract. Rearm so a transient
+			// storage failure does not silently discard an otherwise valid moment.
+			s.machine.Reset()
+			return Evaluation{}, fmt.Errorf("persist candidate: %w", err)
+		}
+		s.counters.CandidatesFound++
+		evaluation.Candidate = &candidate
 	}
-	if err := s.recorder.AppendCandidate(candidate); err != nil {
-		// Persistence is part of the trigger contract. Rearm so a transient
-		// storage failure does not silently discard an otherwise valid moment.
-		s.machine.Reset()
-		return Evaluation{}, fmt.Errorf("persist candidate: %w", err)
+	recordType, err := s.episodes.observe(episodePoint{
+		at: at.UTC(), targetAt: targetAt.UTC(),
+		windowStart: at.Add(-s.options.Window).UTC(), windowEnd: at.UTC(),
+		streamOffsetSecond: streamOffset,
+		score:              score, threshold: decision.Threshold, triggered: decision.Triggered,
+		rawFeatures:    append([]float32(nil), encoded.RawFeatures...),
+		scaledFeatures: append([]float32(nil), encoded.Features...),
+		messages:       rawMessages,
+	})
+	if err != nil {
+		return Evaluation{}, err
 	}
-	s.counters.CandidatesFound++
-	evaluation.Candidate = &candidate
+	if recordType == "triggered" {
+		s.counters.EpisodesFound++
+	} else if recordType == "local_maximum" {
+		s.counters.LocalPeaksFound++
+	}
 	return evaluation, nil
 }
 
@@ -204,12 +256,37 @@ func (s *Session) Counters() store.SessionCounters {
 func (s *Session) Close(at time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.closeLocked(at, s.counters.DroppedChat)
+}
+
+func (s *Session) CloseWithDropped(at time.Time, cumulativeDroppedChat uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closeLocked(at, cumulativeDroppedChat)
+}
+
+func (s *Session) closeLocked(at time.Time, cumulativeDroppedChat uint64) error {
 	if s.closed {
 		return nil
 	}
-	s.closed = true
+	flushed, err := s.episodes.flush(at.UTC())
+	if err != nil {
+		return err
+	}
+	if flushed {
+		s.counters.EpisodesFound++
+	}
+	s.counters.DroppedChat = cumulativeDroppedChat
 	s.counters.EndedAt = at.UTC()
-	return s.recorder.AppendSession(s.counters)
+	s.counters.UsefulSeconds = at.Sub(s.started.Add(s.options.Window)).Seconds()
+	if s.counters.UsefulSeconds < 0 {
+		s.counters.UsefulSeconds = 0
+	}
+	if err := s.recorder.AppendSession(s.counters); err != nil {
+		return err
+	}
+	s.closed = true
+	return nil
 }
 
 func newID() (string, error) {

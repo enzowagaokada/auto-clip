@@ -10,7 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"syscall"
 	"time"
 
@@ -39,8 +39,9 @@ func (p *pathsFlag) Set(value string) error {
 }
 
 type liveSession struct {
-	session *core.Session
-	stream  twitch.Stream
+	session         *core.Session
+	stream          twitch.Stream
+	droppedBaseline uint64
 }
 
 type liveApp struct {
@@ -53,7 +54,8 @@ type liveApp struct {
 	streamers map[string]config.Streamer
 	sessions  map[string]liveSession
 	chat      chan twitch.ChatMessage
-	dropped   atomic.Uint64
+	droppedMu sync.Mutex
+	dropped   map[string]uint64
 }
 
 func main() {
@@ -140,12 +142,16 @@ func run() error {
 		return errors.New("live mode requires TWITCH_CLIENT_ID and TWITCH_USER_ACCESS_TOKEN")
 	}
 
-	recorder, err := store.Open(
-		cfg.Resolve(cfg.Clipper.CandidatesPath),
-		cfg.Resolve(cfg.Clipper.SessionsPath),
-		cfg.Resolve(cfg.Clipper.CandidatesReviewPath),
-		cfg.Resolve(cfg.Clipper.CandidatesReviewCSVPath),
-	)
+	recorder, err := store.Open(store.Paths{
+		Candidates:         cfg.Resolve(cfg.Clipper.CandidatesPath),
+		Sessions:           cfg.Resolve(cfg.Clipper.SessionsPath),
+		CandidateReviews:   cfg.Resolve(cfg.Clipper.CandidatesReviewPath),
+		CandidateReviewCSV: cfg.Resolve(cfg.Clipper.CandidatesReviewCSVPath),
+		Telemetry:          cfg.Resolve(cfg.Clipper.TelemetryPath),
+		Episodes:           cfg.Resolve(cfg.Clipper.EpisodesPath),
+		EpisodeReviews:     cfg.Resolve(cfg.Clipper.EpisodesReviewPath),
+		EpisodeReviewCSV:   cfg.Resolve(cfg.Clipper.EpisodesReviewCSVPath),
+	})
 	if err != nil {
 		return err
 	}
@@ -169,6 +175,7 @@ func run() error {
 		recorder: recorder, client: twitchClient, streamers: streamers,
 		sessions: make(map[string]liveSession),
 		chat:     make(chan twitch.ChatMessage, cfg.Clipper.ChatBufferSize),
+		dropped:  make(map[string]uint64),
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -183,7 +190,7 @@ func (a *liveApp) run(ctx context.Context) error {
 				select {
 				case a.chat <- message:
 				default:
-					a.dropped.Add(1)
+					a.incrementDropped(message.BroadcasterID)
 				}
 			},
 			OnValidated: func(_ context.Context, token twitch.TokenInfo) {
@@ -248,8 +255,12 @@ func (a *liveApp) reconcileStreams(ctx context.Context, now time.Time) error {
 	for broadcasterID, current := range a.sessions {
 		stream, online := live[broadcasterID]
 		if !online || stream.ID != current.stream.ID || !stream.StartedAt.Equal(current.stream.StartedAt) {
-			if err := current.session.Close(now); err != nil {
+			if err := current.session.CloseWithDropped(
+				now,
+				a.droppedFor(broadcasterID)-current.droppedBaseline,
+			); err != nil {
 				log.Printf("close session for %s: %v", current.stream.BroadcasterLogin, err)
+				continue
 			}
 			delete(a.sessions, broadcasterID)
 		}
@@ -272,32 +283,39 @@ func (a *liveApp) reconcileStreams(ctx context.Context, now time.Time) error {
 		session, err := core.NewSession(core.Options{
 			Streamer: streamer.Name, BroadcasterID: broadcasterID,
 			StreamID: stream.ID, StreamStarted: stream.StartedAt, ObservedAt: now,
-			Window:         time.Duration(a.cfg.Clipper.WindowSeconds) * time.Second,
-			TargetLag:      time.Duration(a.cfg.Clipper.TargetLagSeconds) * time.Second,
-			ManifestSHA256: a.bundle.ManifestChecksum,
+			Window:                 time.Duration(a.cfg.Clipper.WindowSeconds) * time.Second,
+			TargetLag:              time.Duration(a.cfg.Clipper.TargetLagSeconds) * time.Second,
+			ManifestSHA256:         a.bundle.ManifestChecksum,
+			EpisodeCloseBelowTicks: a.cfg.Clipper.EpisodeCloseBelowTicks,
+			EpisodeMaxDuration:     time.Duration(a.cfg.Clipper.EpisodeMaxSeconds) * time.Second,
+			LocalPeaksPerHour:      a.cfg.Clipper.LocalPeaksPerHour,
 		}, a.encoder, a.engine, machine, a.recorder)
 		if err != nil {
 			return fmt.Errorf("create session for %s: %w", streamer.Name, err)
 		}
-		a.sessions[broadcasterID] = liveSession{session: session, stream: stream}
+		a.sessions[broadcasterID] = liveSession{
+			session: session, stream: stream,
+			droppedBaseline: a.droppedFor(broadcasterID),
+		}
 		log.Printf("started shadow session for %s stream %s", streamer.Name, stream.ID)
 	}
 	return nil
 }
 
 func (a *liveApp) evaluateSessions(now time.Time) {
-	if dropped := a.dropped.Swap(0); dropped > 0 {
-		log.Printf("chat queue dropped %d messages since last inference tick", dropped)
-	}
-	for _, current := range a.sessions {
+	for broadcasterID, current := range a.sessions {
 		if !current.session.Warm(now) {
 			continue
 		}
-		candidate, err := current.session.Evaluate(now)
+		evaluation, err := current.session.EvaluateDetailedWithDropped(
+			now,
+			a.droppedFor(broadcasterID)-current.droppedBaseline,
+		)
 		if err != nil {
 			log.Printf("evaluate %s: %v", current.stream.BroadcasterLogin, err)
 			continue
 		}
+		candidate := evaluation.Candidate
 		if candidate != nil {
 			log.Printf(
 				"shadow candidate streamer=%s stream=%s score=%.4f threshold=%.4f target=%s",
@@ -308,10 +326,26 @@ func (a *liveApp) evaluateSessions(now time.Time) {
 	}
 }
 
+func (a *liveApp) incrementDropped(broadcasterID string) {
+	a.droppedMu.Lock()
+	defer a.droppedMu.Unlock()
+	a.dropped[broadcasterID]++
+}
+
+func (a *liveApp) droppedFor(broadcasterID string) uint64 {
+	a.droppedMu.Lock()
+	defer a.droppedMu.Unlock()
+	return a.dropped[broadcasterID]
+}
+
 func (a *liveApp) closeSessions(at time.Time) {
 	for broadcasterID, current := range a.sessions {
-		if err := current.session.Close(at); err != nil {
+		if err := current.session.CloseWithDropped(
+			at,
+			a.droppedFor(broadcasterID)-current.droppedBaseline,
+		); err != nil {
 			log.Printf("close session for %s: %v", current.stream.BroadcasterLogin, err)
+			continue
 		}
 		delete(a.sessions, broadcasterID)
 	}

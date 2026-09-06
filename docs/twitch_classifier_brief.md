@@ -125,9 +125,9 @@ requirements.txt
 
 **Current phase:** Remediation — data integrity, reproducible evaluation, and
 live-scoring measurement  
-**Current next step:** Clean up dataset/run reproducibility, collect representative
-hard negatives, and evaluate challengers against fresh untouched VODs and shadow
-episodes. See `docs/project_status.md` and
+**Current next step:** Verify schema-versioned live telemetry, finalized peak
+episodes, and sensitivity replay before collecting representative hard negatives
+or evaluating challengers. See `docs/project_status.md` and
 `docs/overfitting_and_live_scoring_final_plan.md`.
 
 ### Phase 1 — Raw Data Collection
@@ -236,6 +236,8 @@ Implemented in shadow mode:
 at `now - 30s`.
 - Run ONNX inference every 2-3 seconds.
 - Log deduplicated candidates in shadow mode.
+- Append lightweight telemetry for every successful inference and finalize
+  reviewable peak-window episodes without duplicating full chat per tick.
 - Respect cooldown and per-streamer thresholds.
 - Automatic clipping remains disabled.
 
@@ -829,6 +831,14 @@ On each shared inference tick, every live session:
 3. Runs inference via onnxruntime-go
 4. On a below-to-above threshold crossing, writes a shadow candidate and starts
   the cooldown; the detector must fall below threshold before it can rearm
+
+Every successful tick also writes schema-versioned score/features/state
+telemetry. A shadow-only aggregator keeps the peak full window from each
+triggered episode, closes it after two below-threshold ticks or 60 seconds, and
+flushes it on session close. Deterministic below-threshold local maxima are
+sampled at no more than five per useful-hour bucket for lower-threshold review.
+The raw sigmoid score remains a bounded ranking score, not a calibrated
+probability.
 
 The vocabulary file (token → int mapping) gets shipped alongside the ONNX model so
 Go can tokenize identically to how Python tokenized during training.

@@ -58,6 +58,14 @@ clipper:
   sessions_path: "data/live/shadow/window-v2/sessions.jsonl"
   candidates_review_path: "data/live/shadow/window-v2/candidates_review.jsonl"
   candidates_review_csv_path: "data/live/shadow/window-v2/candidates_review.csv"
+  telemetry_path: "data/live/shadow/window-v2/telemetry.jsonl"
+  episodes_path: "data/live/shadow/window-v2/episodes.jsonl"
+  episodes_review_path: "data/live/shadow/window-v2/episodes_review.jsonl"
+  episodes_review_csv_path: "data/live/shadow/window-v2/episodes_review.csv"
+  episode_close_below_ticks: 2
+  episode_max_seconds: 60
+  # Deterministic three-tick local maxima, capped per useful-hour bucket.
+  local_peaks_per_hour: 5
   tokens_input_name: "tokens"
   features_input_name: "features"
   output_name: "logits"

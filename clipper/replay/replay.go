@@ -78,8 +78,10 @@ type Options struct {
 
 type discardRecorder struct{}
 
-func (discardRecorder) AppendCandidate(store.Candidate) error     { return nil }
-func (discardRecorder) AppendSession(store.SessionCounters) error { return nil }
+func (discardRecorder) AppendCandidate(store.Candidate) error          { return nil }
+func (discardRecorder) AppendSession(store.SessionCounters) error      { return nil }
+func (discardRecorder) AppendTelemetry(store.InferenceTelemetry) error { return nil }
+func (discardRecorder) AppendEpisode(store.Episode) error              { return nil }
 
 func Run(paths []string, options Options) error {
 	if len(paths) == 0 {
@@ -132,7 +134,10 @@ func runFile(path string, options Options) (Result, error) {
 		Streamer: streamer, StreamID: vodID, StreamStarted: base,
 		ObservedAt: base.Add(time.Duration(raw.WindowStart * float64(time.Second))),
 		Window:     options.Window, TargetLag: options.TargetLag,
-		ManifestSHA256: options.ManifestSHA256,
+		ManifestSHA256:         options.ManifestSHA256,
+		EpisodeCloseBelowTicks: 2,
+		EpisodeMaxDuration:     60 * time.Second,
+		LocalPeaksPerHour:      5,
 	}, options.Encoder, options.Scorer, machine, discardRecorder{})
 	if err != nil {
 		return Result{}, fmt.Errorf("create replay session for %s: %w", path, err)

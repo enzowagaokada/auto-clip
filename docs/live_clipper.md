@@ -4,10 +4,9 @@ Run every command from the repository root unless the command uses `go -C
 clipper`. The Go application is hard-gated to `clipper.mode: shadow` and has no
 Twitch Create Clip implementation.
 
-> **Window-v2 migration:** the existing raw chat, trained run, ONNX export, and
-> recorded shadow session use the superseded `[target - 30s, target + 5s]`
-> geometry. Do not restart live shadow mode until the v2 data has been fetched,
-> retrained, exported, and verified.
+> **Window-v2 is active:** keep using `models/exports/window-v2-vod-seed0/`
+> with the `[target - 5s, target + 30s]` contract. Legacy five-second-lag logs
+> remain historical evidence only.
 
 ## 1. Rebuild the clip-start-aligned model
 
@@ -155,8 +154,9 @@ go -C clipper run ./cmd/autoclip -repo .. -config config.yaml
 The process uses one EventSub WebSocket for all active channels. It waits 35
 seconds after observing a live stream before inference, scores every 2.5
 seconds, and scores the clip-start-equivalent target 30 seconds before each
-inference time. It logs only below-to-above threshold crossings. Stop it with
-`Ctrl+C`.
+inference time. It appends lightweight telemetry for every successful
+inference, preserves immediate candidate logs on threshold triggers, and
+finalizes peak-window episodes for review. Stop it with `Ctrl+C`.
 
 For the first smoke test, run while at least one configured active streamer is
 live. Confirm:
@@ -183,6 +183,10 @@ quality evidence.
 
 Generated records:
 
+- `data/live/shadow/window-v2/telemetry.jsonl` — one schema-v1 row per
+  successful inference with score, threshold, detector/cooldown state, raw
+  features, model manifest checksum, and cumulative per-session dropped-chat
+  count; it intentionally contains no full chat;
 - `data/live/shadow/window-v2/candidates.jsonl` — full candidate windows,
   scores, messages, exact features, and model manifest checksum;
 - `data/live/shadow/window-v2/candidates_review.jsonl` — scrollable companion
@@ -191,7 +195,19 @@ Generated records:
 - `data/live/shadow/window-v2/candidates_review.csv` — same companion fields plus
   empty `review_label` / `reason` columns for human notes;
 - `data/live/shadow/window-v2/sessions.jsonl` — immutable per-stream counters
-  and durations, plus optional `vod_id` once known; join reviews via `session_id`.
+  and useful durations, episode/local-peak counts, dropped-chat totals, plus
+  optional `vod_id` once known; join reviews via `session_id`;
+- `data/live/shadow/window-v2/episodes.jsonl` — finalized schema-v1 triggered
+  episodes and below-threshold local maxima. Triggered episodes retain the
+  highest-scoring full chat window and close after two consecutive
+  below-threshold ticks, 60 seconds, or session close;
+- `data/live/shadow/window-v2/episodes_review.jsonl` and
+  `episodes_review.csv` — episode review companions. `record_type` distinguishes
+  `triggered` from `local_maximum`; fill only the CSV review columns.
+
+Below-threshold sampling uses a deterministic three-tick rule: the middle score
+must be strictly greater than the prior score, at least the following score,
+and below threshold. At most five are persisted in each useful-hour bucket.
 
 Window-v2 uses a separate directory so its acceptance metrics cannot be
 accidentally mixed with the legacy five-second-lag shadow session.
@@ -200,7 +216,41 @@ Do not interpret scores as confidence percentages. Review candidates against
 the stream/VOD context before changing thresholds or enabling any future clip
 creation behavior.
 
-## 8. Review shadow candidates against the VOD
+## 8. Analyze telemetry and replay sensitivities
+
+After episode reviews are filled, replay one or more thresholds without running
+the model again:
+
+```powershell
+python training/live/analyze_telemetry.py --thresholds 0.48,0.52,0.56
+```
+
+The analyzer writes
+`data/live/shadow/window-v2/telemetry_analysis.json` with useful streamer-hours,
+episodes/hour, score distributions, decided acceptance, reviewed
+positive-versus-hard-negative peak-score ROC AUC, deterministic bootstrap
+intervals, per-streamer results, and dropped-chat rates.
+
+Telemetry supports volume estimates at alternative thresholds. Acceptance is
+reported only when reviewed peak windows support that score range. For a lower
+threshold, the analyzer requires at least five decided below-threshold local
+maxima in range; otherwise `acceptance_supported` is false and acceptance is
+left null.
+
+Checkpoint 2 verification commands (user-run):
+
+```powershell
+python -m unittest discover -s training/live -p "test_*.py"
+go -C clipper test ./...
+go -C clipper test -race ./...
+```
+
+Then run representative replay/synthetic score sequences with the current
+bundle and confirm a finalized episode can have `peak_score > onset_score` and
+the analyzer replay episode count matches the emitted sequence. Do not start
+new Checkpoint 3 collection until these checks pass.
+
+## 9. Review shadow candidates against the VOD
 
 Keep the full append-only `candidates.jsonl` for features and chat. While the
 clipper runs, each candidate also appends one companion line to

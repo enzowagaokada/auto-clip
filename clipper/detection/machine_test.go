@@ -43,3 +43,16 @@ func TestSustainedHighDoesNotRetriggerAfterCooldown(t *testing.T) {
 		t.Fatal("sustained high score retriggered without below-threshold rearm")
 	}
 }
+
+func TestDecisionExposesReplayableState(t *testing.T) {
+	machine, _ := New(0.5, 10*time.Second)
+	start := time.Unix(100, 0)
+	first := machine.Observe(start, 0.7)
+	if !first.AboveThreshold || first.Armed || !first.InCooldown {
+		t.Fatalf("first decision state = %#v", first)
+	}
+	below := machine.Observe(start.Add(time.Second), 0.4)
+	if below.AboveThreshold || !below.Armed || !below.InCooldown {
+		t.Fatalf("below decision state = %#v", below)
+	}
+}

@@ -31,43 +31,57 @@ type Streamer struct {
 }
 
 type Clipper struct {
-	Mode              string   `yaml:"mode"`
-	BundleDir         string   `yaml:"bundle_dir"`
-	RuntimeDLLPath    string   `yaml:"runtime_dll_path"`
-	Threshold         *float32 `yaml:"clip_threshold,omitempty"`
-	CooldownSeconds   int      `yaml:"cooldown_seconds"`
-	WindowSeconds     int      `yaml:"window_seconds"`
-	TargetLagSeconds  int      `yaml:"target_lag_seconds"`
-	InferenceMillis   int      `yaml:"inference_millis"`
-	StreamPollSeconds int      `yaml:"stream_poll_seconds"`
-	ChatBufferSize    int      `yaml:"chat_buffer_size"`
-	CandidatesPath          string `yaml:"candidates_path"`
-	SessionsPath            string `yaml:"sessions_path"`
-	CandidatesReviewPath    string `yaml:"candidates_review_path"`
-	CandidatesReviewCSVPath string `yaml:"candidates_review_csv_path"`
-	TokensInputName         string `yaml:"tokens_input_name"`
-	FeaturesInputName    string `yaml:"features_input_name"`
-	OutputName           string `yaml:"output_name"`
-	OutputIsLogit        bool   `yaml:"output_is_logit"`
+	Mode                    string   `yaml:"mode"`
+	BundleDir               string   `yaml:"bundle_dir"`
+	RuntimeDLLPath          string   `yaml:"runtime_dll_path"`
+	Threshold               *float32 `yaml:"clip_threshold,omitempty"`
+	CooldownSeconds         int      `yaml:"cooldown_seconds"`
+	WindowSeconds           int      `yaml:"window_seconds"`
+	TargetLagSeconds        int      `yaml:"target_lag_seconds"`
+	InferenceMillis         int      `yaml:"inference_millis"`
+	StreamPollSeconds       int      `yaml:"stream_poll_seconds"`
+	ChatBufferSize          int      `yaml:"chat_buffer_size"`
+	CandidatesPath          string   `yaml:"candidates_path"`
+	SessionsPath            string   `yaml:"sessions_path"`
+	CandidatesReviewPath    string   `yaml:"candidates_review_path"`
+	CandidatesReviewCSVPath string   `yaml:"candidates_review_csv_path"`
+	TelemetryPath           string   `yaml:"telemetry_path"`
+	EpisodesPath            string   `yaml:"episodes_path"`
+	EpisodesReviewPath      string   `yaml:"episodes_review_path"`
+	EpisodesReviewCSVPath   string   `yaml:"episodes_review_csv_path"`
+	EpisodeCloseBelowTicks  int      `yaml:"episode_close_below_ticks"`
+	EpisodeMaxSeconds       int      `yaml:"episode_max_seconds"`
+	LocalPeaksPerHour       int      `yaml:"local_peaks_per_hour"`
+	TokensInputName         string   `yaml:"tokens_input_name"`
+	FeaturesInputName       string   `yaml:"features_input_name"`
+	OutputName              string   `yaml:"output_name"`
+	OutputIsLogit           bool     `yaml:"output_is_logit"`
 }
 
 func Defaults(repoRoot string) Config {
 	return Config{
 		RepoRoot: repoRoot,
 		Clipper: Clipper{
-			Mode:              "shadow",
-			BundleDir:         "models/exports/window-v2-vod-seed0",
-			RuntimeDLLPath:    "clipper/runtime/onnxruntime.dll",
-			CooldownSeconds:   75,
-			WindowSeconds:     35,
-			TargetLagSeconds:  30,
-			InferenceMillis:   2500,
-			StreamPollSeconds: 30,
-			ChatBufferSize:    4096,
+			Mode:                    "shadow",
+			BundleDir:               "models/exports/window-v2-vod-seed0",
+			RuntimeDLLPath:          "clipper/runtime/onnxruntime.dll",
+			CooldownSeconds:         75,
+			WindowSeconds:           35,
+			TargetLagSeconds:        30,
+			InferenceMillis:         2500,
+			StreamPollSeconds:       30,
+			ChatBufferSize:          4096,
 			CandidatesPath:          "data/live/shadow/window-v2/candidates.jsonl",
 			SessionsPath:            "data/live/shadow/window-v2/sessions.jsonl",
 			CandidatesReviewPath:    "data/live/shadow/window-v2/candidates_review.jsonl",
 			CandidatesReviewCSVPath: "data/live/shadow/window-v2/candidates_review.csv",
+			TelemetryPath:           "data/live/shadow/window-v2/telemetry.jsonl",
+			EpisodesPath:            "data/live/shadow/window-v2/episodes.jsonl",
+			EpisodesReviewPath:      "data/live/shadow/window-v2/episodes_review.jsonl",
+			EpisodesReviewCSVPath:   "data/live/shadow/window-v2/episodes_review.csv",
+			EpisodeCloseBelowTicks:  2,
+			EpisodeMaxSeconds:       60,
+			LocalPeaksPerHour:       5,
 			TokensInputName:         "tokens",
 			FeaturesInputName:       "features",
 			OutputName:              "logits",
@@ -108,8 +122,16 @@ func (c Config) Validate() error {
 		return errors.New("clipper.runtime_dll_path is required")
 	}
 	if c.Clipper.CandidatesPath == "" || c.Clipper.SessionsPath == "" ||
-		c.Clipper.CandidatesReviewPath == "" || c.Clipper.CandidatesReviewCSVPath == "" {
-		return errors.New("clipper candidates, sessions, and candidates_review paths are required")
+		c.Clipper.CandidatesReviewPath == "" || c.Clipper.CandidatesReviewCSVPath == "" ||
+		c.Clipper.TelemetryPath == "" || c.Clipper.EpisodesPath == "" ||
+		c.Clipper.EpisodesReviewPath == "" || c.Clipper.EpisodesReviewCSVPath == "" {
+		return errors.New("clipper candidate, session, telemetry, and episode paths are required")
+	}
+	if c.Clipper.EpisodeCloseBelowTicks != 2 || c.Clipper.EpisodeMaxSeconds != 60 {
+		return errors.New("episodes must close after 2 below-threshold ticks or 60 seconds")
+	}
+	if c.Clipper.LocalPeaksPerHour <= 0 || c.Clipper.LocalPeaksPerHour > 5 {
+		return errors.New("clipper.local_peaks_per_hour must be in [1, 5]")
 	}
 	if c.Clipper.TokensInputName == "" || c.Clipper.FeaturesInputName == "" || c.Clipper.OutputName == "" {
 		return errors.New("ONNX input and output names are required")
