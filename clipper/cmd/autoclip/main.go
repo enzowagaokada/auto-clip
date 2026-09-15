@@ -143,14 +143,14 @@ func run() error {
 	}
 
 	recorder, err := store.Open(store.Paths{
-		Candidates:         cfg.Resolve(cfg.Clipper.CandidatesPath),
-		Sessions:           cfg.Resolve(cfg.Clipper.SessionsPath),
-		CandidateReviews:   cfg.Resolve(cfg.Clipper.CandidatesReviewPath),
-		CandidateReviewCSV: cfg.Resolve(cfg.Clipper.CandidatesReviewCSVPath),
-		Telemetry:          cfg.Resolve(cfg.Clipper.TelemetryPath),
-		Episodes:           cfg.Resolve(cfg.Clipper.EpisodesPath),
-		EpisodeReviews:     cfg.Resolve(cfg.Clipper.EpisodesReviewPath),
-		EpisodeReviewCSV:   cfg.Resolve(cfg.Clipper.EpisodesReviewCSVPath),
+		Candidates:         cfg.ResolveLivePath(cfg.Clipper.CandidatesPath),
+		Sessions:           cfg.ResolveLivePath(cfg.Clipper.SessionsPath),
+		CandidateReviews:   cfg.ResolveLivePath(cfg.Clipper.CandidatesReviewPath),
+		CandidateReviewCSV: cfg.ResolveLivePath(cfg.Clipper.CandidatesReviewCSVPath),
+		Telemetry:          cfg.ResolveLivePath(cfg.Clipper.TelemetryPath),
+		Episodes:           cfg.ResolveLivePath(cfg.Clipper.EpisodesPath),
+		EpisodeReviews:     cfg.ResolveLivePath(cfg.Clipper.EpisodesReviewPath),
+		EpisodeReviewCSV:   cfg.ResolveLivePath(cfg.Clipper.EpisodesReviewCSVPath),
 	})
 	if err != nil {
 		return err
@@ -281,8 +281,9 @@ func (a *liveApp) reconcileStreams(ctx context.Context, now time.Time) error {
 			return err
 		}
 		session, err := core.NewSession(core.Options{
-			Streamer: streamer.Name, BroadcasterID: broadcasterID,
-			StreamID: stream.ID, StreamStarted: stream.StartedAt, ObservedAt: now,
+			Streamer: streamer.Name, ReviewPartition: a.cfg.Clipper.ReviewPartition,
+			BroadcasterID: broadcasterID,
+			StreamID:      stream.ID, StreamStarted: stream.StartedAt, ObservedAt: now,
 			Window:                 time.Duration(a.cfg.Clipper.WindowSeconds) * time.Second,
 			TargetLag:              time.Duration(a.cfg.Clipper.TargetLagSeconds) * time.Second,
 			ManifestSHA256:         a.bundle.ManifestChecksum,

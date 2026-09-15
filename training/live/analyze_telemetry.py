@@ -17,6 +17,7 @@ import yaml
 
 
 SCHEMA_VERSION = 1
+SUPPORTED_LIVE_SCHEMA_VERSIONS = {1, 2}
 DECIDED_LABELS = {"positive", "hard_negative", "negative"}
 
 
@@ -33,10 +34,19 @@ def read_jsonl(path, kind):
             if not line.strip():
                 continue
             row = json.loads(line)
-            if int(row.get("schema_version", 0)) != SCHEMA_VERSION:
+            schema_version = int(row.get("schema_version", 0))
+            if schema_version not in SUPPORTED_LIVE_SCHEMA_VERSIONS:
                 raise ValueError(
                     f"{path}:{line_number}: unsupported {kind} schema_version "
                     f"{row.get('schema_version')!r}"
+                )
+            if schema_version >= 2 and row.get("review_partition") not in {
+                "calibration",
+                "confirmation",
+            }:
+                raise ValueError(
+                    f"{path}:{line_number}: schema-v2 {kind} requires "
+                    "review_partition"
                 )
             rows.append(row)
     return rows
@@ -354,12 +364,15 @@ def analyze(telemetry, sessions, episode_rows, reviews, thresholds, cooldown_sec
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--telemetry", default="data/live/shadow/window-v2/telemetry.jsonl")
-    parser.add_argument("--sessions", default="data/live/shadow/window-v2/sessions.jsonl")
-    parser.add_argument("--episodes", default="data/live/shadow/window-v2/episodes.jsonl")
     parser.add_argument(
-        "--reviews", default="data/live/shadow/window-v2/episodes_review.csv"
+        "--partition",
+        choices=("calibration", "confirmation"),
+        default="calibration",
     )
+    parser.add_argument("--telemetry", default=None)
+    parser.add_argument("--sessions", default=None)
+    parser.add_argument("--episodes", default=None)
+    parser.add_argument("--reviews", default=None)
     parser.add_argument("--thresholds", default=None, help="Comma-separated scores")
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument(
@@ -375,16 +388,22 @@ def main():
     )
     parser.add_argument("--bootstrap-samples", type=int, default=2000)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument(
-        "--output", default="data/live/shadow/window-v2/telemetry_analysis.json"
-    )
+    parser.add_argument("--output", default=None)
     args = parser.parse_args()
-    telemetry = read_jsonl(args.telemetry, "telemetry")
+    live_dir = os.path.join(
+        "data", "live", "shadow", "window-v2", args.partition
+    )
+    telemetry_path = args.telemetry or os.path.join(live_dir, "telemetry.jsonl")
+    sessions_path = args.sessions or os.path.join(live_dir, "sessions.jsonl")
+    episodes_path = args.episodes or os.path.join(live_dir, "episodes.jsonl")
+    reviews_path = args.reviews or os.path.join(live_dir, "episodes_review.csv")
+    output_path = args.output or os.path.join(live_dir, "telemetry_analysis.json")
+    telemetry = read_jsonl(telemetry_path, "telemetry")
     sessions = []
-    with open(args.sessions, "r", encoding="utf-8") as handle:
+    with open(sessions_path, "r", encoding="utf-8") as handle:
         sessions = [json.loads(line) for line in handle if line.strip()]
-    episodes = read_jsonl(args.episodes, "episode")
-    reviews = load_reviews(args.reviews)
+    episodes = read_jsonl(episodes_path, "episode")
+    reviews = load_reviews(reviews_path)
     if args.thresholds:
         thresholds = [float(value) for value in args.thresholds.split(",")]
     else:
@@ -425,11 +444,11 @@ def main():
         telemetry, sessions, episodes, reviews, thresholds,
         cooldowns, args.bootstrap_samples, args.seed,
     )
-    os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
-    with open(args.output, "w", encoding="utf-8") as handle:
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as handle:
         json.dump(summary, handle, indent=2)
     print(f"Analyzed {summary['telemetry_rows']} telemetry rows")
-    print(f"Saved {args.output}")
+    print(f"Saved {output_path}")
 
 
 if __name__ == "__main__":

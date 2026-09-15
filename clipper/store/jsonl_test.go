@@ -42,18 +42,21 @@ func TestJSONLAppendsWithoutReplacingPriorRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := writer.AppendSession(SessionCounters{
-		SessionID: "s", Streamer: "example", VODID: "2840052504",
+		SessionID: "s", ReviewPartition: "calibration",
+		Streamer: "example", VODID: "2840052504",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.AppendTelemetry(InferenceTelemetry{
-		SchemaVersion: LiveSchemaVersion, SessionID: "s", Streamer: "example",
+		SchemaVersion: LiveSchemaVersion, ReviewPartition: "calibration",
+		SessionID: "s", Streamer: "example",
 		InferenceAt: time.Unix(2, 0).UTC(), Score: 0.7,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.AppendEpisode(Episode{
-		SchemaVersion: LiveSchemaVersion, EpisodeID: "e", RecordType: "triggered",
+		SchemaVersion: LiveSchemaVersion, ReviewPartition: "calibration",
+		EpisodeID: "e", RecordType: "triggered",
 		SessionID: "s", Streamer: "example", OnsetScore: 0.51, PeakScore: 0.8,
 		PeakStreamOffset: 3665,
 	}); err != nil {
@@ -122,7 +125,7 @@ func TestJSONLAppendsWithoutReplacingPriorRecords(t *testing.T) {
 		t.Fatalf("review_label/reason should be empty for machine writes, got %v", rows[1])
 	}
 	telemetryData, err := os.ReadFile(telemetry)
-	if err != nil || !strings.Contains(string(telemetryData), `"schema_version":1`) {
+	if err != nil || !strings.Contains(string(telemetryData), `"schema_version":2`) {
 		t.Fatalf("telemetry record = %q, err=%v", telemetryData, err)
 	}
 	episodeCSVFile, err := os.Open(episodeReviewCSV)
@@ -135,7 +138,8 @@ func TestJSONLAppendsWithoutReplacingPriorRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(episodeRows) != 2 || episodeRows[1][0] != "e" ||
-		episodeRows[1][1] != "triggered" || episodeRows[1][5] != "0.8" {
+		episodeRows[1][1] != "triggered" ||
+		episodeRows[1][2] != "calibration" || episodeRows[1][6] != "0.8" {
 		t.Fatalf("episode review CSV rows = %v", episodeRows)
 	}
 	episodeData, err := os.ReadFile(episodes)
@@ -223,11 +227,42 @@ func TestJSONLRejectsUnknownLiveSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer writer.Close()
-	if err := writer.AppendTelemetry(InferenceTelemetry{SchemaVersion: 2}); err == nil {
+	if err := writer.AppendTelemetry(InferenceTelemetry{SchemaVersion: LiveSchemaVersion + 1}); err == nil {
 		t.Fatal("AppendTelemetry() error = nil, want schema rejection")
 	}
-	if err := writer.AppendEpisode(Episode{SchemaVersion: 2}); err == nil {
+	if err := writer.AppendEpisode(Episode{SchemaVersion: LiveSchemaVersion + 1}); err == nil {
 		t.Fatal("AppendEpisode() error = nil, want schema rejection")
+	}
+}
+
+func TestJSONLRejectsMissingReviewPartition(t *testing.T) {
+	directory := t.TempDir()
+	writer, err := Open(Paths{
+		Candidates:         filepath.Join(directory, "candidates.jsonl"),
+		Sessions:           filepath.Join(directory, "sessions.jsonl"),
+		CandidateReviews:   filepath.Join(directory, "candidates_review.jsonl"),
+		CandidateReviewCSV: filepath.Join(directory, "candidates_review.csv"),
+		Telemetry:          filepath.Join(directory, "telemetry.jsonl"),
+		Episodes:           filepath.Join(directory, "episodes.jsonl"),
+		EpisodeReviews:     filepath.Join(directory, "episodes_review.jsonl"),
+		EpisodeReviewCSV:   filepath.Join(directory, "episodes_review.csv"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	if err := writer.AppendTelemetry(InferenceTelemetry{
+		SchemaVersion: LiveSchemaVersion,
+	}); err == nil {
+		t.Fatal("AppendTelemetry() error = nil, want partition rejection")
+	}
+	if err := writer.AppendEpisode(Episode{
+		SchemaVersion: LiveSchemaVersion,
+	}); err == nil {
+		t.Fatal("AppendEpisode() error = nil, want partition rejection")
+	}
+	if err := writer.AppendSession(SessionCounters{}); err == nil {
+		t.Fatal("AppendSession() error = nil, want partition rejection")
 	}
 }
 

@@ -24,7 +24,8 @@ func (r *flakyEpisodeRecorder) AppendEpisode(episode store.Episode) error {
 func trackerForTest(t *testing.T, recorder *memoryRecorder, start time.Time) *episodeTracker {
 	t.Helper()
 	return newEpisodeTracker(Options{
-		Streamer: "example", StreamID: "stream", ObservedAt: start,
+		Streamer: "example", ReviewPartition: "calibration",
+		StreamID: "stream", ObservedAt: start,
 		Window: 35 * time.Second, ManifestSHA256: "manifest",
 		EpisodeCloseBelowTicks: 2, EpisodeMaxDuration: 60 * time.Second,
 		LocalPeaksPerHour: 5,
@@ -100,7 +101,8 @@ func TestEpisodeFlushRetriesAfterPersistenceError(t *testing.T) {
 	start := time.Unix(100, 0).UTC()
 	recorder := &flakyEpisodeRecorder{failures: 1}
 	tracker := newEpisodeTracker(Options{
-		Streamer: "example", ObservedAt: start, Window: 35 * time.Second,
+		Streamer: "example", ReviewPartition: "calibration",
+		ObservedAt: start, Window: 35 * time.Second,
 		EpisodeCloseBelowTicks: 2, EpisodeMaxDuration: 60 * time.Second,
 		LocalPeaksPerHour: 5,
 	}, "session", recorder)

@@ -32,6 +32,7 @@ type Streamer struct {
 
 type Clipper struct {
 	Mode                    string   `yaml:"mode"`
+	ReviewPartition         string   `yaml:"review_partition"`
 	BundleDir               string   `yaml:"bundle_dir"`
 	RuntimeDLLPath          string   `yaml:"runtime_dll_path"`
 	Threshold               *float32 `yaml:"clip_threshold,omitempty"`
@@ -63,6 +64,7 @@ func Defaults(repoRoot string) Config {
 		RepoRoot: repoRoot,
 		Clipper: Clipper{
 			Mode:                    "shadow",
+			ReviewPartition:         "calibration",
 			BundleDir:               "models/exports/window-v2-vod-seed0",
 			RuntimeDLLPath:          "clipper/runtime/onnxruntime.dll",
 			CooldownSeconds:         75,
@@ -117,6 +119,10 @@ func (c Config) Validate() error {
 	}
 	if c.Clipper.Mode != "shadow" {
 		return errors.New(`clipper.mode must be "shadow"; public clip creation is not implemented`)
+	}
+	if c.Clipper.ReviewPartition != "calibration" &&
+		c.Clipper.ReviewPartition != "confirmation" {
+		return errors.New(`clipper.review_partition must be "calibration" or "confirmation"`)
 	}
 	if c.Clipper.RuntimeDLLPath == "" {
 		return errors.New("clipper.runtime_dll_path is required")
@@ -185,6 +191,17 @@ func (c Config) Resolve(path string) string {
 		return filepath.Clean(path)
 	}
 	return filepath.Join(c.RepoRoot, filepath.FromSlash(path))
+}
+
+// ResolveLivePath keeps calibration and locked-confirmation logs physically
+// separate while allowing one partition switch to apply to every output file.
+func (c Config) ResolveLivePath(path string) string {
+	resolved := c.Resolve(path)
+	return filepath.Join(
+		filepath.Dir(resolved),
+		c.Clipper.ReviewPartition,
+		filepath.Base(resolved),
+	)
 }
 
 func (c Config) ActiveStreamers() []Streamer {

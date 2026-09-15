@@ -24,6 +24,8 @@ OUTPUT_FIELDS = [
     "dataset_index",
     "score",
     "twitch_url",
+    "review_partition",
+    "review_identity",
 ]
 LABEL_ALIASES = {
     "positive": "positive",

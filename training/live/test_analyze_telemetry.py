@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import tempfile
 import unittest
 
 
@@ -127,6 +128,16 @@ class TelemetryAnalyzerTest(unittest.TestCase):
         row["raw_features"] = [0.0]
         with self.assertRaisesRegex(ValueError, "13 raw features"):
             ANALYZER.validate_telemetry([row])
+
+    def test_schema_v2_requires_review_partition(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "telemetry.jsonl")
+            row = telemetry_row("s", "arky", 0, 0.5)
+            row["schema_version"] = 2
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps(row) + "\n")
+            with self.assertRaisesRegex(ValueError, "review_partition"):
+                ANALYZER.read_jsonl(path, "telemetry")
 
 
 if __name__ == "__main__":
