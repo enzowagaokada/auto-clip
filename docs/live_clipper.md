@@ -1,7 +1,6 @@
 # ONNX and Go Shadow Clipper Runbook
 
-Run every command from the repository root unless the command uses `go -C
-clipper`. The Go application is hard-gated to `clipper.mode: shadow` and has no
+Run every command from the repository root unless the command uses `go -C clipper`. The Go application is hard-gated to `clipper.mode: shadow` and has no
 Twitch Create Clip implementation.
 
 > **Window-v2 is active:** keep using `models/exports/window-v2-vod-seed0/`
@@ -188,7 +187,7 @@ live. Confirm:
 1. startup reports that the Twitch user token was validated;
 2. a shadow session starts for each configured streamer that is live;
 3. the process remains connected for at least several minutes without a fatal
-   EventSub error;
+  EventSub error;
 4. `Ctrl+C` exits cleanly; and
 5. the selected partition's `sessions.jsonl` receives a session record.
 
@@ -208,27 +207,29 @@ Generated records are physically separated under
 `data/live/shadow/window-v2/{calibration|confirmation}/`. Schema-v2 telemetry,
 episodes, and sessions also carry `review_partition`:
 
-- `telemetry.jsonl` — one row per
-  successful inference with score, threshold, detector/cooldown state, raw
-  features, model manifest checksum, and cumulative per-session dropped-chat
-  count; it intentionally contains no full chat;
-- `candidates.jsonl` — full candidate windows,
-  scores, messages, exact features, and model manifest checksum;
-- `candidates_review.jsonl` — scrollable companion
-  written automatically on each candidate (`candidate_id`, `session_id`,
-  `streamer`, `score`, `stream_offset_stamp`);
-- `candidates_review.csv` — same companion fields plus
-  empty `review_label` / `reason` columns for human notes;
-- `sessions.jsonl` — immutable per-stream counters
-  and useful durations, episode/local-peak counts, dropped-chat totals, plus
-  optional `vod_id` once known; join reviews via `session_id`;
-- `episodes.jsonl` — finalized schema-v2 triggered
-  episodes and below-threshold local maxima. Triggered episodes retain the
-  highest-scoring full chat window and close after two consecutive
-  below-threshold ticks, 60 seconds, or session close;
-- `episodes_review.jsonl` and
-  `episodes_review.csv` — episode review companions. `record_type` distinguishes
-  `triggered` from `local_maximum`; fill only the CSV review columns.
+- `data/live/shadow/window-v2/telemetry.jsonl` — one schema-v1 row per
+successful inference with score, threshold, detector/cooldown state, raw
+features, model manifest checksum, and cumulative per-session dropped-chat
+count; it intentionally contains no full chat;
+- `data/live/shadow/window-v2/candidates.jsonl` — full candidate windows,
+scores, messages, exact features, and model manifest checksum;
+- `data/live/shadow/window-v2/candidates_review.jsonl` — scrollable companion
+written automatically on each candidate (`candidate_id`, `session_id`,
+`streamer`, `score`, `stream_offset_stamp`);
+- `data/live/shadow/window-v2/candidates_review.csv` — same companion fields plus
+empty `review_label` / `reason` columns for human notes;
+- `data/live/shadow/window-v2/sessions.jsonl` — immutable per-stream counters
+and useful durations, episode/local-peak counts, dropped-chat totals, plus
+optional `vod_id` once known; join reviews via `session_id`;
+- `data/live/shadow/window-v2/episodes.jsonl` — finalized schema-v1 triggered
+episodes and below-threshold local maxima. Triggered episodes retain the
+highest-scoring full chat window and close after two consecutive
+below-threshold ticks, 60 seconds, or session close;
+- `data/live/shadow/window-v2/episodes_review.jsonl` and
+`episodes_review.csv` — episode review companions. `record_type` distinguishes
+`triggered` from `local_maximum`; fill only the CSV review columns.
+
+A `local_maximum` is different: it is a sampled below-threshold peak used to discover worthwhile moments the current threshold missed. It is stored in the same episode format for a unified review workflow, but it is a single sampled window—not a multi-window triggered burst.
 
 Below-threshold sampling uses a deterministic three-tick rule: the middle score
 must be strictly greater than the prior score, at least the following score,
@@ -312,8 +313,7 @@ session `stream_id` (Twitch CLI example):
 twitch api get /videos -q user_id=100869214 -q type=archive -q first=20
 ```
 
-Automatic resolve-on-session-close / review-time refresh is deferred; see
-`docs/project_status.md`.
+Automatic resolve-on-session-close / review-time refresh is deferred for future implementaion; see `docs/project_status.md`.
 
 After calibration episode labels are filled, import peak windows into training
 (does not edit append-only JSONL logs):
