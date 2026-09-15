@@ -174,7 +174,8 @@ func (t *episodeTracker) record(
 	return store.Episode{
 		SchemaVersion: store.LiveSchemaVersion,
 		EpisodeID:     id, RecordType: recordType,
-		SessionID: t.sessionID, Streamer: t.options.Streamer,
+		ReviewPartition: t.options.ReviewPartition,
+		SessionID:       t.sessionID, Streamer: t.options.Streamer,
 		BroadcasterID: t.options.BroadcasterID, StreamID: t.options.StreamID,
 		ManifestSHA256: t.options.ManifestSHA256,
 		OnsetAt:        onset.at, OnsetScore: onset.score,

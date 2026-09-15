@@ -27,6 +27,7 @@ type Recorder interface {
 
 type Options struct {
 	Streamer               string
+	ReviewPartition        string
 	BroadcasterID          string
 	StreamID               string
 	StreamStarted          time.Time
@@ -68,6 +69,10 @@ func NewSession(options Options, encoder *preprocess.Encoder, scorer Scorer,
 	if options.Streamer == "" || options.StreamStarted.IsZero() {
 		return nil, errors.New("streamer and stream start time are required")
 	}
+	if options.ReviewPartition != "calibration" &&
+		options.ReviewPartition != "confirmation" {
+		return nil, errors.New("review partition must be calibration or confirmation")
+	}
 	if options.Window <= 0 {
 		return nil, errors.New("window duration must be positive")
 	}
@@ -99,7 +104,8 @@ func NewSession(options Options, encoder *preprocess.Encoder, scorer Scorer,
 		machine:  machine,
 		recorder: recorder,
 		counters: store.SessionCounters{
-			SessionID: id, Streamer: options.Streamer,
+			SessionID: id, ReviewPartition: options.ReviewPartition,
+			Streamer:      options.Streamer,
 			BroadcasterID: options.BroadcasterID, StreamID: options.StreamID,
 			StreamStartedAt: options.StreamStarted.UTC(), StartedAt: now,
 		},
@@ -180,7 +186,8 @@ func (s *Session) EvaluateDetailedWithDropped(
 	}
 	telemetry := store.InferenceTelemetry{
 		SchemaVersion: store.LiveSchemaVersion,
-		SessionID:     s.id, Streamer: s.options.Streamer,
+		SessionID:     s.id, ReviewPartition: s.options.ReviewPartition,
+		Streamer:      s.options.Streamer,
 		BroadcasterID: s.options.BroadcasterID, StreamID: s.options.StreamID,
 		ManifestSHA256: s.options.ManifestSHA256,
 		InferenceAt:    at.UTC(), TargetAt: targetAt.UTC(),

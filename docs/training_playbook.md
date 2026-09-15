@@ -123,24 +123,36 @@ dataset. Import them before rebuilding so the labeled windows become training
 examples:
 
 ```powershell
-python training/collect/import_live_reviews.py
+python training/collect/import_live_reviews.py --partition calibration
 ```
 
-That command reads `data/live/shadow/window-v2/candidates_review.csv`, joins
-`session_id` to `sessions.jsonl` for `vod_id`, skips unlabeled rows and labeled
-rows with no VOD, merges into the same `window_labels.csv`, and writes
-geometry-v2 windows to `data/raw/chat_live/`. The live typo `negative` is stored
-as `hard_negative`. Uncertain windows are written so a later relabel does not
-require re-parsing live logs; `build_dataset.py` still excludes them.
+That command reads the physically separated calibration
+`episodes_review.csv`, joins `episode_id` to the schema-versioned full episode
+and `session_id` to `sessions.jsonl` for `vod_id`, then materializes the
+episode's peak target/chat window. It preserves review identity and partition
+in `window_labels.csv` and `data/raw/chat_live/`. The live typo `negative` is
+stored as `hard_negative`. Uncertain windows are written so a later relabel
+does not require re-parsing live logs; `build_dataset.py` still excludes them.
 
-Then rebuild and retrain. Do **not** overwrite `models/runs/window-v2-vod-seed0`
-after importing live reviews:
+Confirmation reviews are locked evaluation data. A normal
+`--partition confirmation` import fails closed; `--validate-only` audits their
+schemas and joins without writing training inputs. `build_dataset.py` also
+rejects any confirmation-partition raw window defensively. Legacy onset
+candidate reviews can still be imported explicitly with
+`--input-kind candidate` and explicit source paths.
+
+After all Checkpoint 3 gates pass, rebuild and freeze the dataset snapshot for
+Checkpoint 4. Do not retrain early and do **not** overwrite
+`models/runs/window-v2-vod-seed0`:
 
 ```powershell
 python training/collect/build_dataset.py
 python training/features/encode.py
-python training/model/train.py --output-dir models/runs/window-v2-live-hn-seed0
 ```
+
+Keep the existing `data/splits/remediation_validation_vods.txt`; do not
+regenerate it. The first Checkpoint 4 run creates/reuses the content-addressed
+snapshot for the audited rebuilt dataset.
 
 Reviewed positives override the original negative label, reviewed hard
 negatives remain explicit negatives, and reviewed uncertain windows are
@@ -157,8 +169,9 @@ The analyzer preserves an existing `false_positive_review.csv` by default. Pass
 
 ## Analyze live telemetry and episodes
 
-Checkpoint 2 records every successful inference in schema-v1
-`data/live/shadow/window-v2/telemetry.jsonl` and writes finalized peak windows
+Checkpoint 3 stores schema-v2 live files under physically separate
+`data/live/shadow/window-v2/calibration/` and `confirmation/` directories.
+Every successful inference goes to `telemetry.jsonl`; finalized peak windows go
 to `episodes.jsonl`. Immediate candidate logs remain for compatibility, but
 candidate onset-score distributions must not be used to diagnose score
 compression.
@@ -166,7 +179,8 @@ compression.
 Replay configured cooldown/rearm behavior at one or more thresholds:
 
 ```powershell
-python training/live/analyze_telemetry.py --thresholds 0.48,0.52,0.56
+python training/live/analyze_telemetry.py --partition calibration --thresholds 0.48,0.52,0.56
+python training/live/analyze_telemetry.py --partition confirmation --thresholds 0.48,0.52,0.56
 ```
 
 By default the analyzer reads global and per-streamer cooldowns from
@@ -181,9 +195,12 @@ particular, lower-threshold acceptance requires reviewed
 `record_type=local_maximum` rows in that range.
 
 Fill labels only in `episodes_review.csv`; do not edit telemetry or episode
-JSONL. The current `import_live_reviews.py` still imports the legacy-compatible
-candidate review files. Episode peak-window import belongs to Checkpoint 3 and
-must not be assumed until that importer is explicitly extended and verified.
+JSONL. Run `python training/live/audit_collection.py` before freezing the
+Checkpoint 4 snapshot. It verifies the 8+8 useful-hour partition, two hours per
+target streamer, at least 100 decided reviews, complete episode review
+coverage, and absence of confirmation rows from training inputs. All configured
+streamers may be recorded, but only Arky/Jynxzi/Marlon/Lacy hours satisfy the
+required 8+8 gate; additional streamer-hours are reported separately.
 
 ## One-time untouched VOD test
 

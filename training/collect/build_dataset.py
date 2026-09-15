@@ -108,10 +108,19 @@ def load_review_annotations():
     if not os.path.exists(REVIEW_LABELS_FILE):
         return {}
     with open(REVIEW_LABELS_FILE, "r", encoding="utf-8", newline="") as f:
-        return {
-            example_key(row): row
-            for row in csv.DictReader(f)
-        }
+        annotations = {}
+        for row in csv.DictReader(f):
+            require_annotation_partition(row)
+            annotations[example_key(row)] = row
+        return annotations
+
+
+def require_annotation_partition(row):
+    if row.get("review_partition") == "confirmation":
+        raise ValueError(
+            "Locked confirmation review entered durable training "
+            f"annotations: {row.get('review_identity') or example_key(row)}"
+        )
 
 
 def apply_review_annotations(examples, annotations):
@@ -133,6 +142,10 @@ def apply_review_annotations(examples, annotations):
         reviewed["label"] = int(annotation["training_label"])
         reviewed["review_label"] = review_label
         reviewed["review_notes"] = annotation.get("review_notes", "")
+        if annotation.get("review_partition"):
+            reviewed["review_partition"] = annotation["review_partition"]
+        if annotation.get("review_identity"):
+            reviewed["review_identity"] = annotation["review_identity"]
         reviewed_examples.append(reviewed)
     return reviewed_examples, counts
 
@@ -315,7 +328,7 @@ def build_example(record, label, streamer_name, source, source_path):
     """Assemble one dataset row from a raw chat window."""
     features = compute_features(record)
 
-    return {
+    example = {
         "label": label,
         "streamer_name": streamer_name,
         "vod_id": str(record.get("vod_id")),
@@ -335,6 +348,16 @@ def build_example(record, label, streamer_name, source, source_path):
         "window_geometry_version": WINDOW_GEOMETRY_VERSION,
         "messages": [m.get("message", "") for m in record.get("messages", [])],
     }
+    for name in (
+        "review_partition",
+        "review_identity",
+        "episode_id",
+        "record_type",
+        "peak_target_at",
+    ):
+        if record.get(name) is not None:
+            example[name] = record[name]
+    return example
 
 
 def iter_json_files(directory):
@@ -350,6 +373,14 @@ def require_current_geometry(record, path):
         raise ValueError(
             f"{path} uses stale or invalid window geometry. "
             "Rebuild from current-geometry sources before continuing."
+        )
+
+
+def require_training_partition(record, path):
+    if record.get("review_partition") not in (None, "", "calibration"):
+        raise ValueError(
+            f"{path} belongs to locked confirmation partition and must "
+            "never enter a training dataset"
         )
 
 
@@ -426,6 +457,7 @@ def main():
             record = json.load(f)
 
         require_current_geometry(record, path)
+        require_training_partition(record, path)
         if not record.get("messages"):
             skipped_empty += 1
             continue

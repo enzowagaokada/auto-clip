@@ -140,12 +140,14 @@ violation enters without an explicit review override, or repeated builds differ.
 **Priority:** Very high. This must precede conclusions about live score
 compression.
 
-**Status (implemented, verification pending):** Schema-v1 per-inference
+**Status (passed 2026-09-06):** Schema-v1 per-inference
 telemetry, finalized triggered episodes, bounded below-threshold local maxima,
 episode review companions, and deterministic threshold replay/analyzer code
-are implemented on `1-checkpoint-2-live-telemetry`. The user-owned Go/Python
-tests and synthetic/replay verification must pass before this checkpoint is
-recorded as complete or new collection starts.
+are implemented on `1-checkpoint-2-live-telemetry`. On 2026-09-06, all five
+Python analyzer tests and all Go packages under normal and race testing passed.
+Current-bundle replay then scored a representative positive at `0.4981`
+(triggered at `0.480`) and a representative negative at `0.3112` (not
+triggered).
 
 The current Go clipper records only the first threshold-crossing score. Scores
 therefore naturally cluster near the threshold and cannot establish whether
@@ -218,6 +220,16 @@ do not start collection until episodes survive restart/error and closure tests.
 
 **Priority:** High. Improve the operating-distribution data before broad model
 changes.
+
+**Status (code verified; collection pending):** Live
+sessions are predeclared as calibration or confirmation and written to
+physically separate schema-v2 log directories. Episode peak-window import,
+locked-confirmation fail-closed guards, dataset leakage rejection, and the
+Checkpoint 3 collection audit are implemented. On 2026-09-06, 23 collection
+tests, 8 live-analysis/audit tests, and all Go packages under normal/race
+testing passed. The target-only audit adjustment also passed its updated live
+tests. Human reviews, 8+8 useful-hour collection, and the
+100-decided-episode gate remain.
 
 1. Finish the approximately 98 existing unlabeled window-v2 candidate reviews.
 2. Update `import_live_reviews.py` to understand versioned episode review files

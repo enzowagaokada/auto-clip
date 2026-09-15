@@ -8,6 +8,8 @@ from build_dataset import (
     deduplicate_examples,
     example_id,
     exclude_clip_collisions,
+    require_annotation_partition,
+    require_training_partition,
 )
 
 
@@ -35,6 +37,25 @@ def make_example(target, label=0, source="sampled_negative", path=None):
 
 
 class DatasetIntegrityTest(unittest.TestCase):
+    def test_locked_confirmation_window_is_rejected_from_training(self):
+        require_training_partition(
+            {"review_partition": "calibration"},
+            "calibration.json",
+        )
+        with self.assertRaisesRegex(ValueError, "locked confirmation"):
+            require_training_partition(
+                {"review_partition": "confirmation"},
+                "confirmation.json",
+            )
+        with self.assertRaisesRegex(ValueError, "Locked confirmation review"):
+            require_annotation_partition({
+                "streamer_name": "example",
+                "vod_id": "123",
+                "target_offset": "100",
+                "review_partition": "confirmation",
+                "review_identity": "confirmation:episode:e",
+            })
+
     def test_review_resolves_conflict_before_deduplication(self):
         positive = make_example(100, label=1, source="historical_positive")
         negative = make_example(100, label=0)

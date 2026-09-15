@@ -34,6 +34,9 @@ clipper:
 	if cfg.Clipper.BundleDir != "models/exports/window-v2-vod-seed0" {
 		t.Fatalf("bundle_dir = %q", cfg.Clipper.BundleDir)
 	}
+	if cfg.Clipper.ReviewPartition != "calibration" {
+		t.Fatalf("review_partition = %q, want calibration", cfg.Clipper.ReviewPartition)
+	}
 	if cfg.Clipper.CandidatesPath != "data/live/shadow/window-v2/candidates.jsonl" {
 		t.Fatalf("candidates_path = %q", cfg.Clipper.CandidatesPath)
 	}
@@ -47,6 +50,12 @@ clipper:
 		cfg.Clipper.EpisodesPath != "data/live/shadow/window-v2/episodes.jsonl" {
 		t.Fatalf("telemetry/episode defaults = %q / %q",
 			cfg.Clipper.TelemetryPath, cfg.Clipper.EpisodesPath)
+	}
+	wantLivePath := filepath.Join(
+		root, "data", "live", "shadow", "window-v2", "calibration", "episodes.jsonl",
+	)
+	if got := cfg.ResolveLivePath(cfg.Clipper.EpisodesPath); got != wantLivePath {
+		t.Fatalf("ResolveLivePath() = %q, want %q", got, wantLivePath)
 	}
 }
 
@@ -79,5 +88,14 @@ func TestValidateRejectsChangedEpisodeContract(t *testing.T) {
 	cfg.Clipper.LocalPeaksPerHour = 6
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate() error = nil, want local peak cap error")
+	}
+}
+
+func TestValidateRejectsUnknownReviewPartition(t *testing.T) {
+	cfg := Defaults(t.TempDir())
+	cfg.Twitch.Streamers = []Streamer{{Name: "example", BroadcasterID: "123", Active: true}}
+	cfg.Clipper.ReviewPartition = "training"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() error = nil, want locked partition validation error")
 	}
 }

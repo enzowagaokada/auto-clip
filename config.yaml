@@ -18,13 +18,13 @@ twitch:
   streamers:
     - name: "stableronaldo"
       broadcaster_id: "246450563"
-      active: true
+      active: false
     - name: "jasontheween"
       broadcaster_id: "107117952"
-      active: true
+      active: false
     - name: "adapt"
       broadcaster_id: "211234859"
-      active: true
+      active: false
     - name: "lacy"
       broadcaster_id: "494543675"
       active: true
@@ -39,13 +39,16 @@ twitch:
       active: true
     - name: "plaqueboymax"
       broadcaster_id: "672238954"
-      active: true
+      active: false
 
 # Standalone Go shadow clipper. clip_threshold is intentionally omitted here,
 # so inference_meta.json supplies the model's saved threshold. It may be set
 # globally here or overridden per twitch.streamers entry.
 clipper:
   mode: "shadow"
+  # Predeclare each collection session. Use "calibration" for the first eight
+  # useful hours, then switch to "confirmation" for the locked second eight.
+  review_partition: "calibration"
   bundle_dir: "models/exports/window-v2-vod-seed0"
   runtime_dll_path: "clipper/runtime/onnxruntime.dll"
   cooldown_seconds: 75

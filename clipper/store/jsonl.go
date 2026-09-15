@@ -3,11 +3,13 @@ package store
 import (
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -31,11 +33,12 @@ type Candidate struct {
 	Messages           []Message `json:"messages"`
 }
 
-const LiveSchemaVersion = 1
+const LiveSchemaVersion = 2
 
 type InferenceTelemetry struct {
 	SchemaVersion         int       `json:"schema_version"`
 	SessionID             string    `json:"session_id"`
+	ReviewPartition       string    `json:"review_partition"`
 	Streamer              string    `json:"streamer"`
 	BroadcasterID         string    `json:"broadcaster_id,omitempty"`
 	StreamID              string    `json:"stream_id,omitempty"`
@@ -58,6 +61,7 @@ type Episode struct {
 	SchemaVersion    int       `json:"schema_version"`
 	EpisodeID        string    `json:"episode_id"`
 	RecordType       string    `json:"record_type"`
+	ReviewPartition  string    `json:"review_partition"`
 	SessionID        string    `json:"session_id"`
 	Streamer         string    `json:"streamer"`
 	BroadcasterID    string    `json:"broadcaster_id,omitempty"`
@@ -85,6 +89,7 @@ type Episode struct {
 type EpisodeReview struct {
 	EpisodeID         string  `json:"episode_id"`
 	RecordType        string  `json:"record_type"`
+	ReviewPartition   string  `json:"review_partition"`
 	SessionID         string  `json:"session_id"`
 	Streamer          string  `json:"streamer"`
 	OnsetScore        float32 `json:"onset_score"`
@@ -111,6 +116,7 @@ type Message struct {
 
 type SessionCounters struct {
 	SessionID       string    `json:"session_id"`
+	ReviewPartition string    `json:"review_partition"`
 	Streamer        string    `json:"streamer"`
 	BroadcasterID   string    `json:"broadcaster_id,omitempty"`
 	StreamID        string    `json:"stream_id,omitempty"`
@@ -141,6 +147,7 @@ var reviewCSVHeader = []string{
 var episodeReviewCSVHeader = []string{
 	"episode_id",
 	"record_type",
+	"review_partition",
 	"session_id",
 	"streamer",
 	"onset_score",
@@ -309,6 +316,9 @@ func (s *JSONL) AppendCandidate(candidate Candidate) error {
 func (s *JSONL) AppendSession(counters SessionCounters) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !validReviewPartition(counters.ReviewPartition) {
+		return errors.New("session review_partition must be calibration or confirmation")
+	}
 	return appendAndSync(s.sessions, counters)
 }
 
@@ -317,6 +327,9 @@ func (s *JSONL) AppendTelemetry(telemetry InferenceTelemetry) error {
 	defer s.mu.Unlock()
 	if telemetry.SchemaVersion != LiveSchemaVersion {
 		return fmt.Errorf("telemetry schema_version must be %d", LiveSchemaVersion)
+	}
+	if !validReviewPartition(telemetry.ReviewPartition) {
+		return errors.New("telemetry review_partition must be calibration or confirmation")
 	}
 	return appendAndSync(s.telemetry, telemetry)
 }
@@ -327,12 +340,16 @@ func (s *JSONL) AppendEpisode(episode Episode) error {
 	if episode.SchemaVersion != LiveSchemaVersion {
 		return fmt.Errorf("episode schema_version must be %d", LiveSchemaVersion)
 	}
+	if !validReviewPartition(episode.ReviewPartition) {
+		return errors.New("episode review_partition must be calibration or confirmation")
+	}
 	if err := appendAndSync(s.episodes, episode); err != nil {
 		return err
 	}
 	review := EpisodeReview{
 		EpisodeID: episode.EpisodeID, RecordType: episode.RecordType,
-		SessionID: episode.SessionID, Streamer: episode.Streamer,
+		ReviewPartition: episode.ReviewPartition,
+		SessionID:       episode.SessionID, Streamer: episode.Streamer,
 		OnsetScore: episode.OnsetScore, PeakScore: episode.PeakScore,
 		StreamOffsetStamp: StreamOffsetStamp(episode.PeakStreamOffset),
 	}
@@ -360,7 +377,7 @@ func appendReviewCSV(file *os.File, review CandidateReview) error {
 		review.CandidateID,
 		review.SessionID,
 		review.Streamer,
-		fmt.Sprintf("%.8g", review.Score),
+		formatScore(review.Score),
 		review.StreamOffsetStamp,
 		"",
 		"",
@@ -379,10 +396,11 @@ func appendEpisodeReviewCSV(file *os.File, review EpisodeReview) error {
 	if err := writer.Write([]string{
 		review.EpisodeID,
 		review.RecordType,
+		review.ReviewPartition,
 		review.SessionID,
 		review.Streamer,
-		fmt.Sprintf("%.8g", review.OnsetScore),
-		fmt.Sprintf("%.8g", review.PeakScore),
+		formatScore(review.OnsetScore),
+		formatScore(review.PeakScore),
 		review.StreamOffsetStamp,
 		"",
 		"",
@@ -394,6 +412,14 @@ func appendEpisodeReviewCSV(file *os.File, review EpisodeReview) error {
 		return err
 	}
 	return file.Sync()
+}
+
+func formatScore(score float32) string {
+	return strconv.FormatFloat(float64(score), 'g', -1, 32)
+}
+
+func validReviewPartition(partition string) bool {
+	return partition == "calibration" || partition == "confirmation"
 }
 
 func (s *JSONL) Close() error {

@@ -125,9 +125,9 @@ requirements.txt
 
 **Current phase:** Remediation — data integrity, reproducible evaluation, and
 live-scoring measurement  
-**Current next step:** Verify schema-versioned live telemetry, finalized peak
-episodes, and sensitivity replay before collecting representative hard negatives
-or evaluating challengers. See `docs/project_status.md` and
+**Current next step:** Finish the Checkpoint 2 current-bundle replay gate, then
+collect and review physically separated Checkpoint 3 calibration and locked
+confirmation episodes before evaluating challengers. See `docs/project_status.md` and
 `docs/overfitting_and_live_scoring_final_plan.md`.
 
 ### Phase 1 — Raw Data Collection
@@ -238,6 +238,8 @@ at `now - 30s`.
 - Log deduplicated candidates in shadow mode.
 - Append lightweight telemetry for every successful inference and finalize
   reviewable peak-window episodes without duplicating full chat per tick.
+- Predeclare each collection session as calibration or locked confirmation and
+  write all of its logs to that physical partition.
 - Respect cooldown and per-streamer thresholds.
 - Automatic clipping remains disabled.
 
@@ -837,6 +839,10 @@ telemetry. A shadow-only aggregator keeps the peak full window from each
 triggered episode, closes it after two below-threshold ticks or 60 seconds, and
 flushes it on session close. Deterministic below-threshold local maxima are
 sampled at no more than five per useful-hour bucket for lower-threshold review.
+Schema-v2 records include a predeclared `review_partition`; calibration and
+confirmation logs live in separate directories. Only calibration episode peak
+windows may enter training. The importer and dataset builder both fail closed
+if locked confirmation data is directed toward training.
 The raw sigmoid score remains a bounded ranking score, not a calibrated
 probability.
 
@@ -876,7 +882,7 @@ removed and must not be used.
 - [ ] Streamer-held-out validation confirms the model generalizes to unseen channels
 - [ ] Strict/Balanced/Discovery sensitivity presets calibrated in shadow mode
 - [ ] Per-streamer sensitivity settings documented and loaded by the Go clipper
-- [ ] Approval/rejection feedback persists for future retraining
+- [x] Approval/rejection feedback persists for future retraining
 - [x] Model exported to ONNX successfully
 - [x] Inference script confirms ONNX output matches JAX model output
 - [x] Vocabulary file exported alongside ONNX model for Go tokenization

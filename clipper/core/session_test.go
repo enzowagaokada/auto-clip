@@ -79,6 +79,7 @@ func TestEvaluateUsesThirtySecondTargetLag(t *testing.T) {
 	streamStarted := time.Unix(1_000, 0).UTC()
 	session, err := NewSession(Options{
 		Streamer:               "example",
+		ReviewPartition:        "calibration",
 		StreamID:               "stream",
 		StreamStarted:          streamStarted,
 		ObservedAt:             streamStarted,
@@ -125,6 +126,7 @@ func TestEvaluateUsesThirtySecondTargetLag(t *testing.T) {
 	}
 	if len(recorder.telemetry) != 1 ||
 		recorder.telemetry[0].SchemaVersion != store.LiveSchemaVersion ||
+		recorder.telemetry[0].ReviewPartition != "calibration" ||
 		len(recorder.telemetry[0].RawFeatures) != len(modelmeta.FeatureNames) ||
 		recorder.telemetry[0].CumulativeDroppedChat != 3 {
 		t.Fatalf("telemetry = %#v", recorder.telemetry)

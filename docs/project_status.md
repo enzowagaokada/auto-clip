@@ -1,6 +1,6 @@
 # Project Status (Living Doc)
 
-**Last updated:** 2026-08-29
+**Last updated:** 2026-09-06
 
 Agents and humans: read this first for current state and next actions.
 Deep methodology lives in `docs/twitch_classifier_brief.md`.
@@ -10,7 +10,7 @@ Training details live in `docs/training_playbook.md`.
 
 ## One-line status
 
-Checkpoint 2 live telemetry/episodes is implemented on `1-checkpoint-2-live-telemetry` but awaits user-run verification. It adds schema-v1 inference telemetry, finalized peak episodes, bounded below-threshold local maxima, and threshold replay analysis. Keep `window-v2-vod-seed0` live and do not collect new Checkpoint 3 sessions until the Checkpoint 2 gate passes.
+Checkpoint 2 passed and Checkpoint 3 code is verified on `checkpoint-3-live-labeling`: 23 collection tests, 8 live-analysis tests, all Go normal/race packages, and current-bundle positive/negative replay passed. Human Checkpoint 3 collection/review gates remain. Keep `window-v2-vod-seed0` live.
 
 ---
 
@@ -29,11 +29,11 @@ Checkpoint 2 live telemetry/episodes is implemented on `1-checkpoint-2-live-tele
 |---|---|
 | Data collection pipeline | Window-v2 refetch completed; unavailable legacy windows quarantined |
 | Dataset + temporal features | Clean deterministic rebuild verified: 23,436 rows; 19,969 event groups |
-| Train / evaluate / holdout / review loop | Checkpoint 1 passed; immutable run manifests + fixed 60-VOD remediation validation split ready |
+| Train / evaluate / holdout / review loop | Checkpoint 3 importer/leakage/audit tests passed; labels pending |
 | Untouched-VOD evaluation | Harvest eval recorded for `window-v2-vod-seed0` (see below) |
 | Hard-negative sample weighting | Built: `training.hard_negative_weight: 3.0` on reviewed hard negatives |
 | ONNX export | Window-v2 bundle exported; 3,078-row parity passed with zero mismatches |
-| Go live clipper | Checkpoint 2 telemetry/episode code implemented; user-run tests/replay pending |
+| Go live clipper | Schema-v2 partitioned logging passed normal and race suites |
 | Shadow-mode acceptance tracking | ~100/198 window-v2 candidates labeled; first acceptance readout below |
 | Paid product / UI | Later |
 
@@ -72,7 +72,7 @@ Logs: `data/live/shadow/window-v2/`. Threshold: **0.480**.
 
 First Jason smoke still only proves transport. Do not mix with legacy five-second-lag logs.
 
-## Checkpoint 2 live measurement (implemented 2026-08-29; unverified)
+## Checkpoint 2 live measurement (passed 2026-09-06)
 
 - Every successful live inference now appends one schema-v1 lightweight row to
   `telemetry.jsonl`; full chat is not duplicated there.
@@ -84,8 +84,33 @@ First Jason smoke still only proves transport. Do not mix with legacy five-secon
 - `training/live/analyze_telemetry.py` replays configurable thresholds/cooldowns
   and reports volume, reviewed acceptance support, peak-score AUC, bootstrap
   intervals, per-streamer results, and dropped-chat rates.
-- Do not treat implementation as passed until the user reports the prescribed
-  Go/Python tests and replay/synthetic checks.
+- User verification on 2026-09-06: all 5 Python analyzer tests passed. After
+  correcting float32 CSV score formatting, all Go packages passed both
+  `go test ./...` and `go test -race ./...`.
+- Current-bundle replay passed: representative positive scored `0.4981` and
+  triggered at `0.480`; representative negative scored `0.3112` and did not.
+
+## Checkpoint 3 representative labels (code verified 2026-09-06)
+
+- `clipper.review_partition` predeclares every new session as `calibration` or
+  `confirmation`; all live files are physically separated under the matching
+  directory and schema-v2 records carry the partition.
+- All configured streamers may be collected concurrently, but only
+  Arky/Jynxzi/Marlon/Lacy hours count toward the required 8+8 gate; extra hours
+  are reported separately.
+- `import_live_reviews.py` now defaults to episode reviews and materializes the
+  full peak target/chat window with durable review identity and partition.
+- Confirmation import is validation-only and fails closed on training writes;
+  `build_dataset.py` independently rejects confirmation raw windows.
+- `training/live/audit_collection.py` checks 8+8 hours, two hours per target
+  streamer, 100 decided reviews, complete sampled-episode review, and locked
+  confirmation absence from training inputs.
+- User verification: 23 collection tests and 8 live-analysis/audit tests passed;
+  all Go packages passed normal and race testing.
+- After that run, all streamers were re-enabled and the audit was tightened so
+  only target-cohort hours satisfy 8+8; the updated live tests passed.
+- Human work remains: finish existing candidate reviews, collect the partitioned
+  16 useful hours, and review all triggered/local-maximum episodes.
 
 ## Legacy live shadow smoke
 
@@ -266,7 +291,8 @@ Random AP baseline ≈ positive prevalence ≈ **0.33**. This is meaningfully be
 | `training/export/` | Direct ONNX export and parity tools |
 | `models/exports/window-v2-vod-seed0/` | Verified window-v2 deployment bundle |
 | `clipper/` | Standalone Go shadow clipper |
-| `data/live/shadow/window-v2/` | Window-v2 candidate/session/review logs (`candidates_review.jsonl` + `.csv`) |
+| `data/live/shadow/window-v2/{calibration,confirmation}/` | Physically separated schema-v2 telemetry/episode/session/review logs |
+| `training/live/audit_collection.py` | Checkpoint 3 hours/reviews/locked-data gate |
 | `docs/live_clipper.md` | Setup, verification, replay, and live runbook |
 | `docs/training_playbook.md` | How to train / interpret metrics |
 | `docs/twitch_classifier_brief.md` | Full product/ML brief |
@@ -280,9 +306,9 @@ The active roadmap is `docs/overfitting_and_live_scoring_final_plan.md`.
 Implement and verify one checkpoint at a time. Checkpoint 1 code is complete but
 Checkpoint 1 passed on 2026-08-27. Its 19 collection tests, 4 model tests,
 two-build deterministic hash checks, and fixed 60-VOD remediation manifest were
-verified. Checkpoint 2 implementation is complete but not yet passed. Run the
-documented Go and Python tests plus synthetic/replay verification; do not
-retrain or start Checkpoint 3 collection yet.
+verified. Checkpoint 2 and Checkpoint 3 code gates passed. Do not retrain.
+Collect calibration before locked confirmation, complete human episode reviews,
+and run the collection audit.
 
 ### 1. Complete window-v2 migration (do this next)
 

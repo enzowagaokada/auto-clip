@@ -103,10 +103,21 @@ no shadow logs:
 
 Run at least one historical positive and one historical negative:
 
+In Powershell
 ```powershell
 $PositiveReplay = (Get-ChildItem .\data\raw\chat -Filter *.json | Select-Object -First 1).FullName
 $NegativeReplay = (Get-ChildItem .\data\raw\chat_negatives -Filter *.json | Select-Object -First 1).FullName
 go -C clipper run ./cmd/autoclip -repo .. -replay $PositiveReplay -replay $NegativeReplay
+```
+
+In Bash
+```bash
+positive_files=(data/raw/chat/*.json)
+negative_files=(data/raw/chat_negatives/*.json)
+
+go -C clipper run ./cmd/autoclip -repo .. \
+  -replay "${positive_files[0]}" \
+  -replay "${negative_files[0]}"
 ```
 
 The command prints one JSON object per file containing the target offset, score,
@@ -145,7 +156,20 @@ the token at startup and hourly, and never prints the token.
 
 ## 7. Start live shadow mode
 
-Review the active streamers and `clipper` section in `config.yaml`, then run:
+All configured streamers may run concurrently so collection is not blocked
+when one target channel is offline. Checkpoint 3's required 16-hour gate still
+counts only Arky, Jynxzi, Marlon, and Lacy; extra streamers are reported
+separately and create additional episodes to review. Before each run, predeclare
+the session by setting exactly one value:
+
+```yaml
+clipper:
+  review_partition: "calibration"  # first eight useful streamer-hours
+```
+
+After calibration reaches eight useful streamer-hours, stop the clipper,
+change the value to `confirmation`, and restart. Never change a session's
+partition after collection. Then run:
 
 ```powershell
 go -C clipper run ./cmd/autoclip -repo .. -config config.yaml
@@ -166,13 +190,12 @@ live. Confirm:
 3. the process remains connected for at least several minutes without a fatal
    EventSub error;
 4. `Ctrl+C` exits cleanly; and
-5. `data/live/shadow/window-v2/sessions.jsonl` receives a session record.
+5. the selected partition's `sessions.jsonl` receives a session record.
 
 It is valid for a short smoke test to produce no candidate. If a threshold
 crossing occurs, confirm that it is appended to
-`data/live/shadow/window-v2/candidates.jsonl`,
-`data/live/shadow/window-v2/candidates_review.jsonl`, and
-`data/live/shadow/window-v2/candidates_review.csv`. Do not lower the
+the selected partition's `candidates.jsonl`, `candidates_review.jsonl`, and
+`candidates_review.csv`. Do not lower the
 threshold merely to force a candidate during the smoke test.
 
 The legacy-geometry authenticated smoke test passed on 2026-08-04: one StableRonaldo
@@ -181,27 +204,29 @@ inferences, recorded 15 candidates, and reported zero inference errors.
 It proves the transport/runtime path worked but must not be used as window-v2
 quality evidence.
 
-Generated records:
+Generated records are physically separated under
+`data/live/shadow/window-v2/{calibration|confirmation}/`. Schema-v2 telemetry,
+episodes, and sessions also carry `review_partition`:
 
-- `data/live/shadow/window-v2/telemetry.jsonl` — one schema-v1 row per
+- `telemetry.jsonl` — one row per
   successful inference with score, threshold, detector/cooldown state, raw
   features, model manifest checksum, and cumulative per-session dropped-chat
   count; it intentionally contains no full chat;
-- `data/live/shadow/window-v2/candidates.jsonl` — full candidate windows,
+- `candidates.jsonl` — full candidate windows,
   scores, messages, exact features, and model manifest checksum;
-- `data/live/shadow/window-v2/candidates_review.jsonl` — scrollable companion
+- `candidates_review.jsonl` — scrollable companion
   written automatically on each candidate (`candidate_id`, `session_id`,
   `streamer`, `score`, `stream_offset_stamp`);
-- `data/live/shadow/window-v2/candidates_review.csv` — same companion fields plus
+- `candidates_review.csv` — same companion fields plus
   empty `review_label` / `reason` columns for human notes;
-- `data/live/shadow/window-v2/sessions.jsonl` — immutable per-stream counters
+- `sessions.jsonl` — immutable per-stream counters
   and useful durations, episode/local-peak counts, dropped-chat totals, plus
   optional `vod_id` once known; join reviews via `session_id`;
-- `data/live/shadow/window-v2/episodes.jsonl` — finalized schema-v1 triggered
+- `episodes.jsonl` — finalized schema-v2 triggered
   episodes and below-threshold local maxima. Triggered episodes retain the
   highest-scoring full chat window and close after two consecutive
   below-threshold ticks, 60 seconds, or session close;
-- `data/live/shadow/window-v2/episodes_review.jsonl` and
+- `episodes_review.jsonl` and
   `episodes_review.csv` — episode review companions. `record_type` distinguishes
   `triggered` from `local_maximum`; fill only the CSV review columns.
 
@@ -222,11 +247,12 @@ After episode reviews are filled, replay one or more thresholds without running
 the model again:
 
 ```powershell
-python training/live/analyze_telemetry.py --thresholds 0.48,0.52,0.56
+python training/live/analyze_telemetry.py --partition calibration --thresholds 0.48,0.52,0.56
+python training/live/analyze_telemetry.py --partition confirmation --thresholds 0.48,0.52,0.56
 ```
 
-The analyzer writes
-`data/live/shadow/window-v2/telemetry_analysis.json` with useful streamer-hours,
+The analyzer writes `telemetry_analysis.json` inside the selected partition
+with useful streamer-hours,
 episodes/hour, score distributions, decided acceptance, reviewed
 positive-versus-hard-negative peak-score ROC AUC, deterministic bootstrap
 intervals, per-streamer results, and dropped-chat rates.
@@ -245,32 +271,39 @@ go -C clipper test ./...
 go -C clipper test -race ./...
 ```
 
+Checkpoint 3 adds collection/import/audit tests. After changing this branch,
+rerun:
+
+```powershell
+python -m unittest discover -s training/collect -p "test_*.py"
+python -m unittest discover -s training/live -p "test_*.py"
+go -C clipper test ./...
+go -C clipper test -race ./...
+```
+
 Then run representative replay/synthetic score sequences with the current
 bundle and confirm a finalized episode can have `peak_score > onset_score` and
 the analyzer replay episode count matches the emitted sequence. Do not start
 new Checkpoint 3 collection until these checks pass.
 
-## 9. Review shadow candidates against the VOD
+## 9. Review shadow episodes against the VOD
 
-Keep the full append-only `candidates.jsonl` for features and chat. While the
-clipper runs, each candidate also appends one companion line to
-`data/live/shadow/window-v2/candidates_review.jsonl` and
-`data/live/shadow/window-v2/candidates_review.csv` with
-`candidate_id`, `session_id`, `streamer`, `score`, and `stream_offset_stamp`
-(for example `1h1m4s`). The CSV also has empty `review_label` and `reason`
-columns — fill those after watching the VOD (`positive` / `hard_negative` /
-`uncertain`, plus a short reason). Do not edit the append-only JSONL candidate
-logs to store decisions. If you edit the CSV in Excel while the clipper is
-running, close the file before the next candidate write or Excel may lock the
-append.
+Keep each partition's append-only `episodes.jsonl` for peak features and chat.
+Every finalized triggered episode or sampled local maximum appends a companion
+row to that partition's `episodes_review.csv` with episode/session identity,
+onset/peak scores, and the peak seek stamp. Fill `review_label` and `reason`
+after watching the VOD (`positive` / `hard_negative` / `uncertain`). Review
+every row in both partitions, but never import confirmation into training. Do
+not edit append-only JSONL. If you edit CSV in Excel while the clipper runs,
+close it before the next episode write or Excel may lock the append.
 
 Join `session_id` → `sessions.jsonl`. When that session has `vod_id`, open:
 
 `https://www.twitch.tv/videos/{vod_id}?t={stream_offset_stamp}`
 
-Under window v2, the stamp is the clip-start-equivalent moment 30 seconds
-before `detected_at`. Start roughly five seconds earlier to inspect the full
-scored window. Judge the video moment, not only chat or score.
+The episode stamp is the peak window's clip-start-equivalent target. Start
+roughly five seconds earlier to inspect its full scored window. Judge the video
+moment, not only chat or score.
 
 If `vod_id` is missing, resolve once from Helix archives by matching the
 session `stream_id` (Twitch CLI example):
@@ -282,15 +315,31 @@ twitch api get /videos -q user_id=100869214 -q type=archive -q first=20
 Automatic resolve-on-session-close / review-time refresh is deferred; see
 `docs/project_status.md`.
 
-After labels are filled, import them into training (does not edit the append-only
-JSONL logs):
+After calibration episode labels are filled, import peak windows into training
+(does not edit append-only JSONL logs):
 
 ```powershell
-python training/collect/import_live_reviews.py
+python training/collect/import_live_reviews.py --partition calibration
 python training/collect/build_dataset.py
 python training/features/encode.py
-python training/model/train.py --output-dir models/runs/window-v2-live-hn-seed0
 ```
+
+The importer defaults to schema-versioned episode reviews and materializes each
+episode's peak target/window, not its onset candidate. It writes
+`review_partition` and `review_identity` to durable annotations and raw live
+windows. Confirmation is locked: a normal confirmation import fails closed.
+Audit its joins without writing training data:
+
+```powershell
+python training/collect/import_live_reviews.py --partition confirmation --validate-only
+python training/live/audit_collection.py
+```
+
+The audit requires eight useful hours in each partition, at least two total
+hours for every target streamer, at least 100 decided episode reviews, all
+sampled episodes reviewed, and no confirmation row in annotations/raw training
+windows. Rebuild and freeze the Checkpoint 4 snapshot only after those gates
+pass.
 
 Rows without `vod_id` are skipped. Live VODs that enter training must not be
 reused as an untouched test. See `docs/training_playbook.md`.

@@ -131,7 +131,8 @@ func runFile(path string, options Options) (Result, error) {
 		return Result{}, err
 	}
 	session, err := core.NewSession(core.Options{
-		Streamer: streamer, StreamID: vodID, StreamStarted: base,
+		Streamer: streamer, ReviewPartition: "calibration",
+		StreamID: vodID, StreamStarted: base,
 		ObservedAt: base.Add(time.Duration(raw.WindowStart * float64(time.Second))),
 		Window:     options.Window, TargetLag: options.TargetLag,
 		ManifestSHA256:         options.ManifestSHA256,

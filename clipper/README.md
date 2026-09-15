@@ -29,7 +29,7 @@ Live mode loads `.env` and requires `TWITCH_CLIENT_ID` plus a
 `TWITCH_USER_ACCESS_TOKEN` with `user:read:chat`. It polls Helix for stream
 identity, uses one shared EventSub socket, and writes append-only candidate,
 candidate-review, telemetry, episode, episode-review, and session records.
-`telemetry.jsonl` contains one schema-v1 row per successful inference with
+`telemetry.jsonl` contains one schema-v2 row per successful inference with
 score, threshold, detector/cooldown state, raw features, model checksum, and
 cumulative per-session dropped-chat count; it does not duplicate full chat.
 Full candidate records contain the
@@ -41,15 +41,18 @@ Join `session_id` to `sessions.jsonl` for optional `vod_id`.
 Triggered episodes retain the highest-scoring full window and close after two
 consecutive below-threshold ticks, 60 seconds, or session close. Deterministic
 below-threshold local maxima are marked separately and capped at five per
-useful-hour bucket. Review `episodes_review.csv`; analyze threshold volume and
+useful-hour bucket. Set `clipper.review_partition` before startup; calibration
+and confirmation files are physically separated and carry that partition.
+Review `episodes_review.csv`; analyze threshold volume and
 supported acceptance ranges with:
 
 ```powershell
-python training/live/analyze_telemetry.py --thresholds 0.48,0.52,0.56
+python training/live/analyze_telemetry.py --partition calibration --thresholds 0.48,0.52,0.56
 ```
 
-The window-v2 logs live under `data/live/shadow/window-v2/`; legacy-geometry
-logs remain in their original parent directory for comparison.
+The window-v2 logs live under
+`data/live/shadow/window-v2/{calibration|confirmation}/`; legacy-geometry logs
+remain in their original parent directory for comparison.
 
 Replay mode does not require Twitch credentials and never writes candidate or
 session JSONL:
