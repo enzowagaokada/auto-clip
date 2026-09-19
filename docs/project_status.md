@@ -1,6 +1,6 @@
 # Project Status (Living Doc)
 
-**Last updated:** 2026-09-06
+**Last updated:** 2026-09-18
 
 Agents and humans: read this first for current state and next actions.
 Deep methodology lives in `docs/twitch_classifier_brief.md`.
@@ -367,9 +367,9 @@ context.
 
 - [x] Put `session_id` on `candidates_review.jsonl` / `.csv` so rows join to `sessions.jsonl`
 - [x] Add optional `vod_id` on session records; backfill existing Arky/Marlon/Jason sessions
-- [ ] Later: on session close, poll Helix archives until `stream_id` matches and persist `vod_id` (retry/backoff; archives often appear minutes–hours after offline)
-- [ ] Later: optional review-time refresh for still-pending `vod_id`s; paginate beyond `first=20` for backfill of old sessions
-- [ ] Later: surface ready Twitch URLs in the review CSV (`https://www.twitch.tv/videos/{vod_id}?t={stamp}`)
+- [x] On session close (streamer offline or clipper shutdown), poll Helix archives until `stream_id` matches and persist `vod_id` in place (bounded retry/backoff; archives often appear minutes after offline)
+- [x] Review-time refresh: `python training/live/resolve_session_vods.py --partition calibration` paginates beyond `first=20` and backfills old sessions
+- [x] Surface Twitch URLs on review CSVs (`vod_id` / `twitch_url` columns) via the resolver; join remains `session_id` → `sessions.jsonl`
 
 ### 4. Productization later
 
@@ -378,8 +378,7 @@ context.
 - [ ] Per-streamer calibration from acceptance rates
 - [ ] Outside-community streamers for broader generalization
 - [ ] Fully automatic clipping only after live acceptance is high enough
-- [ ] Ensure broadcast ids can automatically be inserted without the user needing to search it
-      up themselves
+- [x] Helix archive `vod_id` is resolved automatically on session close and via `resolve_session_vods.py`
 - [ ] Figure out how to make persistent tokens for the user without needed them to login/
       get another user token consistently.
 

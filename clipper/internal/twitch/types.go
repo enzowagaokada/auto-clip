@@ -33,6 +33,12 @@ type Config struct {
 	ValidateURL string
 	HelixURL    string
 	EventSubURL string
+
+	// ArchiveRetryWait defaults to 15s between Get Videos polls. Tests may
+	// set a millisecond wait. ArchiveCreatedSlack is the fallback window
+	// when Helix omits stream_id on an archive.
+	ArchiveRetryWait    time.Duration
+	ArchiveCreatedSlack time.Duration
 }
 
 // Callbacks are invoked synchronously by their producing goroutine. OnValidated

@@ -1,6 +1,8 @@
 package store
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
@@ -10,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -159,14 +162,17 @@ var episodeReviewCSVHeader = []string{
 
 type JSONL struct {
 	mu               sync.Mutex
+	sessionsPath     string
 	candidates       *os.File
 	sessions         *os.File
 	reviews          *os.File
 	reviewCSV        *os.File
+	reviewCSVPad     int
 	telemetry        *os.File
 	episodes         *os.File
 	episodeReviews   *os.File
 	episodeReviewCSV *os.File
+	episodeCSVPad    int
 }
 
 type Paths struct {
@@ -196,7 +202,7 @@ func Open(paths Paths) (*JSONL, error) {
 		_ = sessions.Close()
 		return nil, fmt.Errorf("open candidates review JSONL: %w", err)
 	}
-	reviewCSV, err := openCSV(paths.CandidateReviewCSV, reviewCSVHeader)
+	reviewCSV, reviewPad, err := openCSV(paths.CandidateReviewCSV, reviewCSVHeader)
 	if err != nil {
 		_ = candidates.Close()
 		_ = sessions.Close()
@@ -218,20 +224,23 @@ func Open(paths Paths) (*JSONL, error) {
 		closeFiles(candidates, sessions, reviews, reviewCSV, telemetry, episodes)
 		return nil, fmt.Errorf("open episode reviews JSONL: %w", err)
 	}
-	episodeReviewCSV, err := openCSV(paths.EpisodeReviewCSV, episodeReviewCSVHeader)
+	episodeReviewCSV, episodePad, err := openCSV(paths.EpisodeReviewCSV, episodeReviewCSVHeader)
 	if err != nil {
 		closeFiles(candidates, sessions, reviews, reviewCSV, telemetry, episodes, episodeReviews)
 		return nil, fmt.Errorf("open episode reviews CSV: %w", err)
 	}
 	return &JSONL{
+		sessionsPath:     paths.Sessions,
 		candidates:       candidates,
 		sessions:         sessions,
 		reviews:          reviews,
 		reviewCSV:        reviewCSV,
+		reviewCSVPad:     reviewPad,
 		telemetry:        telemetry,
 		episodes:         episodes,
 		episodeReviews:   episodeReviews,
 		episodeReviewCSV: episodeReviewCSV,
+		episodeCSVPad:    episodePad,
 	}, nil
 }
 
@@ -242,54 +251,65 @@ func openAppend(path string) (*os.File, error) {
 	return os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 }
 
-func openCSV(path string, header []string) (*os.File, error) {
+func openCSV(path string, header []string) (*os.File, int, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	info, err := file.Stat()
 	if err != nil {
 		_ = file.Close()
-		return nil, err
+		return nil, 0, err
 	}
+	pad := 0
 	if info.Size() == 0 {
 		writer := csv.NewWriter(file)
 		if err := writer.Write(header); err != nil {
 			_ = file.Close()
-			return nil, err
+			return nil, 0, err
 		}
 		writer.Flush()
 		if err := writer.Error(); err != nil {
 			_ = file.Close()
-			return nil, err
+			return nil, 0, err
 		}
 		if err := file.Sync(); err != nil {
 			_ = file.Close()
-			return nil, err
+			return nil, 0, err
 		}
 	} else {
 		if _, err := file.Seek(0, 0); err != nil {
 			_ = file.Close()
-			return nil, err
+			return nil, 0, err
 		}
 		existing, err := csv.NewReader(file).Read()
 		if err != nil {
 			_ = file.Close()
-			return nil, fmt.Errorf("read existing CSV header: %w", err)
+			return nil, 0, fmt.Errorf("read existing CSV header: %w", err)
 		}
-		if !slices.Equal(existing, header) {
+		if !headerCompatible(existing, header) {
 			_ = file.Close()
-			return nil, fmt.Errorf("existing CSV header %v does not match schema %v", existing, header)
+			return nil, 0, fmt.Errorf("existing CSV header %v does not match schema %v", existing, header)
+		}
+		if len(existing) > len(header) {
+			pad = len(existing) - len(header)
 		}
 	}
 	if _, err := file.Seek(0, 2); err != nil {
 		_ = file.Close()
-		return nil, err
+		return nil, 0, err
 	}
-	return file, nil
+	return file, pad, nil
+}
+
+func headerCompatible(existing, header []string) bool {
+	if slices.Equal(existing, header) {
+		return true
+	}
+	return len(existing) >= len(header) && slices.Equal(existing[:len(header)], header)
 }
 
 func (s *JSONL) AppendCandidate(candidate Candidate) error {
@@ -308,11 +328,12 @@ func (s *JSONL) AppendCandidate(candidate Candidate) error {
 	if err := appendAndSync(s.reviews, review); err != nil {
 		return err
 	}
-	return appendReviewCSV(s.reviewCSV, review)
+	return appendReviewCSV(s.reviewCSV, review, s.reviewCSVPad)
 }
 
-// AppendSession writes a final immutable counter snapshot. A new process or
-// reconnect uses a new session_id instead of mutating prior records.
+// AppendSession writes a final counter snapshot. A new process or reconnect
+// uses a new session_id instead of mutating prior records. vod_id may later be
+// patched in place via SetSessionVOD once Helix publishes the archive.
 func (s *JSONL) AppendSession(counters SessionCounters) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -320,6 +341,37 @@ func (s *JSONL) AppendSession(counters SessionCounters) error {
 		return errors.New("session review_partition must be calibration or confirmation")
 	}
 	return appendAndSync(s.sessions, counters)
+}
+
+// SetSessionVOD rewrites the existing session row with vod_id. It does not
+// append a second snapshot, so useful-hour audits stay unique per session_id.
+func (s *JSONL) SetSessionVOD(sessionID, vodID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sessionID = strings.TrimSpace(sessionID)
+	vodID = strings.TrimSpace(vodID)
+	if sessionID == "" || vodID == "" {
+		return errors.New("session_id and vod_id are required")
+	}
+	if s.sessionsPath == "" {
+		return errors.New("session log path is not configured")
+	}
+	if err := s.sessions.Close(); err != nil {
+		return err
+	}
+	if err := patchSessionVOD(s.sessionsPath, sessionID, vodID); err != nil {
+		reopened, reopenErr := openAppend(s.sessionsPath)
+		if reopenErr == nil {
+			s.sessions = reopened
+		}
+		return err
+	}
+	reopened, err := openAppend(s.sessionsPath)
+	if err != nil {
+		return err
+	}
+	s.sessions = reopened
+	return nil
 }
 
 func (s *JSONL) AppendTelemetry(telemetry InferenceTelemetry) error {
@@ -356,7 +408,7 @@ func (s *JSONL) AppendEpisode(episode Episode) error {
 	if err := appendAndSync(s.episodeReviews, review); err != nil {
 		return err
 	}
-	return appendEpisodeReviewCSV(s.episodeReviewCSV, review)
+	return appendEpisodeReviewCSV(s.episodeReviewCSV, review, s.episodeCSVPad)
 }
 
 func appendAndSync(file *os.File, value any) error {
@@ -371,9 +423,9 @@ func appendAndSync(file *os.File, value any) error {
 	return file.Sync()
 }
 
-func appendReviewCSV(file *os.File, review CandidateReview) error {
+func appendReviewCSV(file *os.File, review CandidateReview, pad int) error {
 	writer := csv.NewWriter(file)
-	if err := writer.Write([]string{
+	if err := writer.Write(padCSVRow([]string{
 		review.CandidateID,
 		review.SessionID,
 		review.Streamer,
@@ -381,7 +433,7 @@ func appendReviewCSV(file *os.File, review CandidateReview) error {
 		review.StreamOffsetStamp,
 		"",
 		"",
-	}); err != nil {
+	}, pad)); err != nil {
 		return err
 	}
 	writer.Flush()
@@ -391,9 +443,9 @@ func appendReviewCSV(file *os.File, review CandidateReview) error {
 	return file.Sync()
 }
 
-func appendEpisodeReviewCSV(file *os.File, review EpisodeReview) error {
+func appendEpisodeReviewCSV(file *os.File, review EpisodeReview, pad int) error {
 	writer := csv.NewWriter(file)
-	if err := writer.Write([]string{
+	if err := writer.Write(padCSVRow([]string{
 		review.EpisodeID,
 		review.RecordType,
 		review.ReviewPartition,
@@ -404,7 +456,7 @@ func appendEpisodeReviewCSV(file *os.File, review EpisodeReview) error {
 		review.StreamOffsetStamp,
 		"",
 		"",
-	}); err != nil {
+	}, pad)); err != nil {
 		return err
 	}
 	writer.Flush()
@@ -412,6 +464,76 @@ func appendEpisodeReviewCSV(file *os.File, review EpisodeReview) error {
 		return err
 	}
 	return file.Sync()
+}
+
+func padCSVRow(row []string, pad int) []string {
+	if pad <= 0 {
+		return row
+	}
+	padded := make([]string, len(row)+pad)
+	copy(padded, row)
+	return padded
+}
+
+func patchSessionVOD(path, sessionID, vodID string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var output bytes.Buffer
+	found := false
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var counters SessionCounters
+		if err := json.Unmarshal(line, &counters); err != nil {
+			return fmt.Errorf("decode session row: %w", err)
+		}
+		if counters.SessionID == sessionID {
+			if counters.VODID != "" && counters.VODID != vodID {
+				return fmt.Errorf("session %s already has vod_id %s", sessionID, counters.VODID)
+			}
+			counters.VODID = vodID
+			encoded, err := json.Marshal(counters)
+			if err != nil {
+				return err
+			}
+			line = encoded
+			found = true
+		}
+		output.Write(line)
+		output.WriteByte('\n')
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("session %s not found", sessionID)
+	}
+	temp, err := os.CreateTemp(filepath.Dir(path), "sessions.*.jsonl")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	if _, err := temp.Write(output.Bytes()); err != nil {
+		temp.Close()
+		os.Remove(tempPath)
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		temp.Close()
+		os.Remove(tempPath)
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		os.Remove(tempPath)
+		return err
+	}
+	return os.Rename(tempPath, path)
 }
 
 func formatScore(score float32) string {

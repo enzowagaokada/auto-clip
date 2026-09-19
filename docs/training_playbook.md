@@ -129,7 +129,9 @@ python training/collect/import_live_reviews.py --partition calibration
 That command reads the physically separated calibration
 `episodes_review.csv`, joins `episode_id` to the schema-versioned full episode
 and `session_id` to `sessions.jsonl` for `vod_id`, then materializes the
-episode's peak target/chat window. It preserves review identity and partition
+episode's peak target/chat window. Rows without `vod_id` are skipped, so run
+`python training/live/resolve_session_vods.py --partition calibration` first if
+sessions still lack archives. It preserves review identity and partition
 in `window_labels.csv` and `data/raw/chat_live/`. The live typo `negative` is
 stored as `hard_negative`. Uncertain windows are written so a later relabel
 does not require re-parsing live logs; `build_dataset.py` still excludes them.

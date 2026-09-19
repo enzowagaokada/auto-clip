@@ -266,6 +266,95 @@ func TestJSONLRejectsMissingReviewPartition(t *testing.T) {
 	}
 }
 
+func TestSetSessionVODRewritesExistingRow(t *testing.T) {
+	directory := t.TempDir()
+	writer, err := Open(testPaths(directory))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.AppendSession(SessionCounters{
+		SessionID: "s1", ReviewPartition: "calibration", Streamer: "arky",
+		StreamID: "live-1", UsefulSeconds: 12,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.AppendSession(SessionCounters{
+		SessionID: "s2", ReviewPartition: "calibration", Streamer: "lacy",
+		StreamID: "live-2", UsefulSeconds: 9,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.SetSessionVOD("s1", "vod-99"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.SetSessionVOD("s1", "vod-99"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.SetSessionVOD("s1", "other"); err == nil {
+		t.Fatal("SetSessionVOD() error = nil, want conflict")
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(directory, "sessions.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("session rows = %d, want 2", len(lines))
+	}
+	var first, second SessionCounters
+	if err := json.Unmarshal([]byte(lines[0]), &first); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(lines[1]), &second); err != nil {
+		t.Fatal(err)
+	}
+	if first.SessionID != "s1" || first.VODID != "vod-99" || first.UsefulSeconds != 12 {
+		t.Fatalf("first session = %+v", first)
+	}
+	if second.SessionID != "s2" || second.VODID != "" {
+		t.Fatalf("second session = %+v", second)
+	}
+}
+
+func TestJSONLAcceptsExtraReviewCSVColumns(t *testing.T) {
+	directory := t.TempDir()
+	episodeCSV := filepath.Join(directory, "episodes_review.csv")
+	header := strings.Join(append(append([]string{}, episodeReviewCSVHeader...), "vod_id", "twitch_url"), ",")
+	if err := os.WriteFile(episodeCSV, []byte(header+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := Open(testPaths(directory))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.AppendEpisode(Episode{
+		SchemaVersion: LiveSchemaVersion, ReviewPartition: "calibration",
+		EpisodeID: "e", RecordType: "triggered", SessionID: "s", Streamer: "arky",
+		PeakStreamOffset: 5,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testPaths(directory string) Paths {
+	return Paths{
+		Candidates:         filepath.Join(directory, "candidates.jsonl"),
+		Sessions:           filepath.Join(directory, "sessions.jsonl"),
+		CandidateReviews:   filepath.Join(directory, "candidates_review.jsonl"),
+		CandidateReviewCSV: filepath.Join(directory, "candidates_review.csv"),
+		Telemetry:          filepath.Join(directory, "telemetry.jsonl"),
+		Episodes:           filepath.Join(directory, "episodes.jsonl"),
+		EpisodeReviews:     filepath.Join(directory, "episodes_review.jsonl"),
+		EpisodeReviewCSV:   filepath.Join(directory, "episodes_review.csv"),
+	}
+}
+
 func TestJSONLRejectsMismatchedReviewCSVSchema(t *testing.T) {
 	directory := t.TempDir()
 	episodeCSV := filepath.Join(directory, "episodes_review.csv")

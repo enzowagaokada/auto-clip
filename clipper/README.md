@@ -36,7 +36,8 @@ Full candidate records contain the
 model manifest checksum, raw/scaled features, and source chat; companions
 `candidates_review.jsonl` and `candidates_review.csv` keep id, session_id,
 streamer, score, and seek stamp (CSV also has empty `review_label`/`reason`).
-Join `session_id` to `sessions.jsonl` for optional `vod_id`.
+Join `session_id` to `sessions.jsonl` for `vod_id` (filled on close when Helix
+has the archive, or later with `python training/live/resolve_session_vods.py`).
 
 Triggered episodes retain the highest-scoring full window and close after two
 consecutive below-threshold ticks, 60 seconds, or session close. Deterministic

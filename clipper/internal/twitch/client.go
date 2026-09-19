@@ -9,15 +9,20 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	requiredChatScope = "user:read:chat"
-	maxResponseBytes  = 1 << 20
-	maxStreamBatch    = 100
+	requiredChatScope   = "user:read:chat"
+	maxResponseBytes    = 1 << 20
+	maxStreamBatch      = 100
+	maxVideoPage        = 100
+	defaultArchiveRetry = 15 * time.Second
+	defaultArchiveSlack = 2 * time.Minute
+	maxArchiveRetry     = 2 * time.Minute
 )
 
 // Client owns the Twitch API configuration and one shared EventSub connection.
@@ -31,6 +36,8 @@ type Client struct {
 	eventSubURL    string
 	validateEvery  time.Duration
 	seen           *deduper
+	archiveRetry   time.Duration
+	archiveSlack   time.Duration
 	runMu          sync.Mutex
 	running        bool
 }
@@ -71,6 +78,8 @@ func NewClient(cfg Config) (*Client, error) {
 		eventSubURL:    valueOr(cfg.EventSubURL, defaultEventSubURL),
 		validateEvery:  validateEvery,
 		seen:           newDeduper(20_000),
+		archiveRetry:   valueDuration(cfg.ArchiveRetryWait, defaultArchiveRetry),
+		archiveSlack:   valueDuration(cfg.ArchiveCreatedSlack, defaultArchiveSlack),
 	}, nil
 }
 
@@ -199,6 +208,124 @@ func (c *Client) getStreamsBatch(ctx context.Context, ids []string) ([]Stream, e
 	return result, nil
 }
 
+type helixVideo struct {
+	ID        string    `json:"id"`
+	StreamID  string    `json:"stream_id"`
+	UserID    string    `json:"user_id"`
+	CreatedAt time.Time `json:"created_at"`
+	Type      string    `json:"type"`
+}
+
+// FindArchiveVOD paginates Helix Get Videos for a broadcaster and returns the
+// archive whose stream_id matches. If Helix omits stream_id, a unique created_at
+// match within ArchiveCreatedSlack of startedAt is accepted.
+func (c *Client) FindArchiveVOD(ctx context.Context, userID, streamID string, startedAt time.Time) (string, error) {
+	userID = strings.TrimSpace(userID)
+	streamID = strings.TrimSpace(streamID)
+	if userID == "" {
+		return "", errors.New("twitch: user ID is required")
+	}
+	var cursor string
+	var timeMatches []string
+	for {
+		videos, next, err := c.getVideosPage(ctx, userID, cursor)
+		if err != nil {
+			return "", err
+		}
+		for _, video := range videos {
+			if streamID != "" && strings.TrimSpace(video.StreamID) == streamID && video.ID != "" {
+				return video.ID, nil
+			}
+			if strings.TrimSpace(video.StreamID) != "" {
+				continue
+			}
+			if startedAt.IsZero() || video.CreatedAt.IsZero() {
+				continue
+			}
+			delta := video.CreatedAt.Sub(startedAt)
+			if delta < 0 {
+				delta = -delta
+			}
+			if delta <= c.archiveSlack && video.ID != "" {
+				timeMatches = append(timeMatches, video.ID)
+			}
+		}
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	unique := uniqueNonEmpty(timeMatches)
+	if len(unique) == 1 {
+		return unique[0], nil
+	}
+	return "", nil
+}
+
+// WaitForArchiveVOD polls FindArchiveVOD until a VOD appears or ctx ends.
+func (c *Client) WaitForArchiveVOD(ctx context.Context, userID, streamID string, startedAt time.Time) (string, error) {
+	delay := c.archiveRetry
+	if delay <= 0 {
+		delay = defaultArchiveRetry
+	}
+	for {
+		vodID, err := c.FindArchiveVOD(ctx, userID, streamID, startedAt)
+		if err != nil {
+			return "", err
+		}
+		if vodID != "" {
+			return vodID, nil
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return "", ctx.Err()
+		case <-timer.C:
+		}
+		if delay < maxArchiveRetry {
+			delay *= 2
+			if delay > maxArchiveRetry {
+				delay = maxArchiveRetry
+			}
+		}
+	}
+}
+
+func (c *Client) getVideosPage(ctx context.Context, userID, cursor string) ([]helixVideo, string, error) {
+	query := url.Values{}
+	query.Set("user_id", userID)
+	query.Set("type", "archive")
+	query.Set("first", strconv.Itoa(maxVideoPage))
+	if cursor != "" {
+		query.Set("after", cursor)
+	}
+	endpoint := c.helixURL + "/videos?" + query.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("twitch: create Get Videos request: %w", err)
+	}
+	c.setHelixHeaders(req)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("twitch: Get Videos: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", apiStatusError("Get Videos", resp)
+	}
+	var wire struct {
+		Data       []helixVideo `json:"data"`
+		Pagination struct {
+			Cursor string `json:"cursor"`
+		} `json:"pagination"`
+	}
+	if err := decodeJSON(resp.Body, &wire); err != nil {
+		return nil, "", fmt.Errorf("twitch: decode Get Videos response: %w", err)
+	}
+	return wire.Data, strings.TrimSpace(wire.Pagination.Cursor), nil
+}
+
 func (c *Client) createChatSubscriptions(ctx context.Context, sessionID, tokenUserID string) error {
 	for _, broadcasterID := range c.broadcasterIDs {
 		body := struct {
@@ -297,6 +424,13 @@ func contains(values []string, wanted string) bool {
 		}
 	}
 	return false
+}
+
+func valueDuration(value, fallback time.Duration) time.Duration {
+	if value > 0 {
+		return value
+	}
+	return fallback
 }
 
 func valueOr(value, fallback string) string {

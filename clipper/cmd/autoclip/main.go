@@ -56,6 +56,8 @@ type liveApp struct {
 	chat      chan twitch.ChatMessage
 	droppedMu sync.Mutex
 	dropped   map[string]uint64
+	resolveWG sync.WaitGroup
+	vodBudget time.Duration
 }
 
 func main() {
@@ -173,9 +175,10 @@ func run() error {
 	app := &liveApp{
 		cfg: cfg, bundle: bundle, encoder: encoder, engine: engine,
 		recorder: recorder, client: twitchClient, streamers: streamers,
-		sessions: make(map[string]liveSession),
-		chat:     make(chan twitch.ChatMessage, cfg.Clipper.ChatBufferSize),
-		dropped:  make(map[string]uint64),
+		sessions:  make(map[string]liveSession),
+		chat:      make(chan twitch.ChatMessage, cfg.Clipper.ChatBufferSize),
+		dropped:   make(map[string]uint64),
+		vodBudget: 10 * time.Minute,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -255,6 +258,7 @@ func (a *liveApp) reconcileStreams(ctx context.Context, now time.Time) error {
 	for broadcasterID, current := range a.sessions {
 		stream, online := live[broadcasterID]
 		if !online || stream.ID != current.stream.ID || !stream.StartedAt.Equal(current.stream.StartedAt) {
+			sessionID := current.session.ID()
 			if err := current.session.CloseWithDropped(
 				now,
 				a.droppedFor(broadcasterID)-current.droppedBaseline,
@@ -263,6 +267,7 @@ func (a *liveApp) reconcileStreams(ctx context.Context, now time.Time) error {
 				continue
 			}
 			delete(a.sessions, broadcasterID)
+			a.resolveVOD(sessionID, current.stream)
 		}
 	}
 	for broadcasterID, stream := range live {
@@ -341,6 +346,7 @@ func (a *liveApp) droppedFor(broadcasterID string) uint64 {
 
 func (a *liveApp) closeSessions(at time.Time) {
 	for broadcasterID, current := range a.sessions {
+		sessionID := current.session.ID()
 		if err := current.session.CloseWithDropped(
 			at,
 			a.droppedFor(broadcasterID)-current.droppedBaseline,
@@ -349,7 +355,42 @@ func (a *liveApp) closeSessions(at time.Time) {
 			continue
 		}
 		delete(a.sessions, broadcasterID)
+		a.resolveVOD(sessionID, current.stream)
 	}
+	a.resolveWG.Wait()
+}
+
+func (a *liveApp) resolveVOD(sessionID string, stream twitch.Stream) {
+	if sessionID == "" || stream.ID == "" || stream.BroadcasterID == "" {
+		return
+	}
+	budget := a.vodBudget
+	if budget <= 0 {
+		budget = 10 * time.Minute
+	}
+	a.resolveWG.Add(1)
+	go func() {
+		defer a.resolveWG.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), budget)
+		defer cancel()
+		vodID, err := a.client.WaitForArchiveVOD(ctx, stream.BroadcasterID, stream.ID, stream.StartedAt)
+		if err != nil {
+			if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+				log.Printf("resolve VOD for %s stream %s: %v", stream.BroadcasterLogin, stream.ID, err)
+				return
+			}
+			log.Printf("VOD not published yet for %s stream %s; run resolve_session_vods.py later", stream.BroadcasterLogin, stream.ID)
+			return
+		}
+		if vodID == "" {
+			return
+		}
+		if err := a.recorder.SetSessionVOD(sessionID, vodID); err != nil {
+			log.Printf("persist vod_id for session %s: %v", sessionID, err)
+			return
+		}
+		log.Printf("resolved vod %s for %s stream %s", vodID, stream.BroadcasterLogin, stream.ID)
+	}()
 }
 
 func defaultRepoRoot() (string, error) {

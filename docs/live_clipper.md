@@ -218,9 +218,10 @@ written automatically on each candidate (`candidate_id`, `session_id`,
 `streamer`, `score`, `stream_offset_stamp`);
 - `data/live/shadow/window-v2/candidates_review.csv` — same companion fields plus
 empty `review_label` / `reason` columns for human notes;
-- `data/live/shadow/window-v2/sessions.jsonl` — immutable per-stream counters
+- `data/live/shadow/window-v2/sessions.jsonl` — per-stream counters
 and useful durations, episode/local-peak counts, dropped-chat totals, plus
-optional `vod_id` once known; join reviews via `session_id`;
+`vod_id` once Helix publishes the archive (patched in place on the same
+session row); join reviews via `session_id`;
 - `data/live/shadow/window-v2/episodes.jsonl` — finalized schema-v1 triggered
 episodes and below-threshold local maxima. Triggered episodes retain the
 highest-scoring full chat window and close after two consecutive
@@ -306,14 +307,23 @@ The episode stamp is the peak window's clip-start-equivalent target. Start
 roughly five seconds earlier to inspect its full scored window. Judge the video
 moment, not only chat or score.
 
-If `vod_id` is missing, resolve once from Helix archives by matching the
-session `stream_id` (Twitch CLI example):
+The clipper tries to fill `vod_id` when a streamer goes offline while it is
+still running, and again when you stop the clipper (Ctrl+C). It polls Helix
+archives for up to about 10 minutes because VODs often appear after the stream
+ends. If the archive is still missing, leave the session row as-is and run:
 
 ```powershell
-twitch api get /videos -q user_id=100869214 -q type=archive -q first=20
+python training/live/resolve_session_vods.py --partition calibration
+python training/live/resolve_session_vods.py --all
+python training/live/resolve_session_vods.py --partition calibration --dry-run
 ```
 
-Automatic resolve-on-session-close / review-time refresh is deferred for future implementaion; see `docs/project_status.md`.
+That paginates `GET /helix/videos?type=archive` until `stream_id` matches, writes
+`vod_id` onto the existing session row (never a second snapshot), and adds
+`vod_id` / `twitch_url` columns on the review CSVs without clearing labels.
+App-token env vars `TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET` are enough.
+Close Excel on those CSVs before the rewrite. Unresolved rows (no archive,
+disabled highlights, expired VOD) are printed and skipped.
 
 After calibration episode labels are filled, import peak windows into training
 (does not edit append-only JSONL logs):
